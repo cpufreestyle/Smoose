@@ -1,0 +1,119 @@
+# Smoose
+
+一个仿 [Mos](https://github.com/Caldis/Mos)（公认最好的 macOS 鼠标滚动增强工具）的原生菜单栏 App：
+把鼠标滚轮的"一格一跳"重建成触控板那样的连续滚动曲线。原生 Swift，无第三方依赖。
+
+## 功能
+
+| 功能 | 说明 |
+| --- | --- |
+| 平滑滚动 | HID 层拦截 `scrollWheel`，按显示刷新率（ProMotion 可达 120Hz）插值重建滚动曲线 |
+| 距离倍率 | 0.2×–8×。≈4× 接近 Chrome/Safari 原生行滚动距离，≈1.5× 接近原生 AppKit 控件 |
+| 顺滑度 | 0–1，映射为指数插值时间常数 τ（0.006s ~ 0.27s） |
+| 最小步长 | 低于此值的微推会被放大，避免轻推无反应 |
+| 双轴独立 | 垂直 / 水平各自独立开关平滑与方向反转 |
+| 忽略触控板 | 触控板与 Magic Mouse 的连续滚动默认原样透传 |
+| 每应用配置 | 按 bundle id 单独配置，或从「预设」一键套用（干脆 / 丝滑 / 浏览器 / 原生 App / 跳过） |
+| 按键绑定 | 中键与侧键 3/4/5 绑定到调度中心、启动台、⌘⇥、显示桌面、浏览器前后、切换桌面、截图面板 |
+| 开机启动 | SMAppService 登录项 |
+
+## 首次使用
+
+1. 打开 App → 系统弹出**辅助功能**授权 → 到「系统设置 → 隐私与安全性 → 辅助功能」勾选 Smoose
+2. 授权后菜单栏图标变为绿点，实时生效，无需重启
+3. 先用鼠标滚一页，对照下面的参数微调到手感合适
+
+菜单栏绿点 = 已授权；红点 = 未授权。
+
+## 参数怎么调
+
+- **整体太慢 / 太快** → 调「距离倍率」。浏览器里觉得比原生慢就往上加到 4× 左右。
+- **感觉黏、跟不上手** → 调低「顺滑度」（0.1 左右 ≈ 干脆、几乎瞬时）。
+- **感觉太飘、停不下来** → 调低「顺滑度」或提高「最小步长」。
+- **某个 App 就是不对**（比如终端、Excel）→ 到「每应用」给它单独配一组参数，或选「跳过此 App」。
+
+## 技术实现
+
+```
+滚轮 HID 事件 ──▶ CGEventTap(cghidEventTap, headInsert, defaultTap)
+                     │  判断来源：IsContinuous / ScrollPhase / MomentumPhase → 触控板则透传
+                     │  取值：触控板用 fixedPt(16.16 像素)，鼠标用 pointDelta（系统自己的 line→px 换算）
+                     ▼
+              ScrollAxis 状态机  target / current / sent
+                     │  CVDisplayLink（跟随屏幕刷新）每帧：
+                     │  current += (target − current) × (1 − e^(−dt/τ))
+                     │  投递 trunc(current − sent)，不足 1px 的小数累积到下一帧
+                     ▼
+              CGEvent(scrollWheelEvent2Source: units:.pixel) → CGEventPost(cghidEventTap)
+```
+
+三个关键工程细节：
+
+1. **回环防护**：自己投递的事件用 `eventSourceUserData` 魔法值 + 私有 sourceStateID + pid 三重标记，
+   在 tap 中识别并放行；另加「单秒投递 > 40000px 即清空队列」的失控兜底。
+2. **距离守恒**：亚像素余数跨帧累积，到位时把 ≥0.5px 的尾量结清，保证最终滚动距离 = ∑(原始 delta × 倍率)，
+   离线测试 1/20/60 格场景误差为 0。
+3. **跟手性**：默认 τ≈0.059s，在 120Hz 下 90% 行程约 142ms（触控板量级）；60Hz 屏幕约 133ms，曲线自动适配 dt。
+
+## 构建
+
+```bash
+cd Smoose
+./build.sh            # 产出 build/Smoose.app
+cp -R build/Smoose.app /Applications/
+```
+
+源码：`Sources/Model.swift`（配置模型）、`Sources/ScrollAxis.swift`（插值引擎，纯逻辑）、
+`Sources/ScrollEngine.swift`（事件拦截）、`Sources/Views.swift`（SwiftUI 界面）、`Sources/App.swift`。
+
+### 一键验证（harness）
+
+```bash
+./run_tests.sh             # A B C D E F F2 G G2 G3 十段，离线
+./run_tests.sh --device    # + 真机断言
+```
+
+十段分别是：A 插值与距离守恒、B 每应用命中、C 按键动作枚举、D 自动更新决策、
+E 构建签名、F 发布产出端、F2 `release.sh` 参数与 `gh` 路径解析、
+G 真实 `UpdateModel` 反 drift、G2 `httpMessage` 反 drift、G3 `relaunch` 退出路径反 drift。
+改引擎 / 持久化 / 自动更新代码后必须跑一遍，全部 PASS 才算完成。契约与断言清单见 [SPEC.md](SPEC.md)。
+
+⚠️ 两条写 harness 时踩过的坑：
+
+- **断言 stage 必须用 `-Onone`**：stdlib `assert()` 在 `-O` 下被整条优化掉（实测 `assert(1==2)` 在 `-O` 下 exit 0），所以一律用自建 `require()` 计数 + 非零退出。
+- **别用 `[ ! -s <(grep ...) ]` 判断断言结果**：进程替换出来的是 FIFO，zsh 的 `-s` 在写端 flush 前就判断，永远返回「空」，断言全 FAIL 也照样 PASS。必须先把 grep 结果收进变量。
+
+离线验证插值器：
+
+```bash
+cp Tests/InterpTest.swift /tmp/smoose_test/main.swift
+swiftc -O -sdk $(xcrun --sdk macosx --show-sdk-path) -target arm64-apple-macos14.0 \
+  -o /tmp/smoose_interp Sources/ScrollAxis.swift /tmp/smoose_test/main.swift
+/tmp/smoose_interp
+```
+
+## 自动更新
+
+零第三方依赖（不引 Sparkle：项目没有 appcast、没有 EdDSA 签名链，引了只会得到一个永远验证不过的更新器）。
+
+版本源默认走 GitHub Releases，发布只需：
+
+```bash
+./scripts/release.sh --github --repo cpufreestyle/Smoose
+```
+
+脚本会构建 → 打包 `dist/Smoose-<version>.zip` → 自检（顶层 `Smoose.app` / bundle id / 签名）→ 发 Release 并上传 asset。
+仓库必须是 **public**：App 拉版本源不带认证，private 仓库的 API 会返 404。
+
+用户也可在「关于 → 自动更新」里填自建 JSON 版本源：
+
+```json
+{"version":"1.2.0","url":"https://example.com/Smoose.zip","notes":"...","minSystem":"14.0"}
+```
+
+## 与 Mos 的差距 / 已知限制
+
+- 没有做了 Mos 的 Logitech HID++ 侧键识别、手势、DPI 控制、输入法切换（那些是另一层复杂度）
+- 触控板判定走 `IsContinuous`/`ScrollPhase`/`MomentumPhase` 启发式，个别第三方设备可能误判 → 关掉「忽略触控板」即可对该设备生效
+- 「距离倍率」的绝对基准依赖各 App 自己对滚轮的行距换算，这也是 Mos 提供每应用配置的原因；本作同样支持
+- 署名：仅做学习与自用，Mos 原作 MIT 协议 © Caldis。本项目未包含 Mos 任何源码。
