@@ -1,0 +1,12 @@
+# 构建产物
+build/
+dist/
+.build/
+logs/
+
+# 系统垃圾
+.DS_Store
+
+# 误入的截图 / 临时文件（- 是某次 screencapture 误建的文件名）
+/-
+*.png.tmp
