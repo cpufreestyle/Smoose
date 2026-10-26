@@ -339,9 +339,17 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
 - [x] **重建并重新部署**（2026-10-27 完成）：已部署含 10-26 安全加固 + 10-27 两个修复的新构建，
       二进制 sha256 `a26c1d37…`，`codesign --verify --deep --strict` 通过，`open smoose://settings` 实测能弹窗。
       注意**不要**用 `cp -R build/Smoose.app /Applications/Smoose.app`（会在目标里嵌套一层，见 §6.1a）。
-- [ ] **发一个新的 Release（建议 1.2.1 或 1.3.0）**：先把 `Resources/Info.plist` 的 `CFBundleShortVersionString` 从 `1.2.0` 抬上去，
-      再 `./scripts/release.sh --github --repo cpufreestyle/Smoose`。**打了包必须重跑 release.sh 重新签名**——
-      用 `plutil` 改 Info.plist 造出来的「新版」会让 `_CodeSignature` 与 Info.plist 不符，客户端签名校验会直接拒绝。
+- [x] **发 v1.2.1（2026-10-27 完成）**：版本号抬到 `1.2.1` 后跑 `./scripts/release.sh --github --repo cpufreestyle/Smoose`，
+      Release `v1.2.1` 已发、asset 已上传，用户端的自动更新能真拿到 IPv6 回环与签名回退这两个修复。
+      真机链路已逐段验证：GitHub `releases/latest` 返回 200 → 真实 `UpdateCheck.decide` 解出 `available(1.2.1)` →
+      asset 下载 897507 字节、sha256 `2eb0885d…` 与产出端一致 → zip 顶层就是 `Smoose.app`、
+      `codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端
+      `expectedTeamIdentifier` 对齐、bundle id `app.smoose.macos` 匹配。
+      ⚠️ 打了包必须重跑 `release.sh` 重新签名 —— 用 `plutil` 改 Info.plist 造出来的「新版」会让
+      `_CodeSignature` 与 Info.plist 不符，客户端签名校验会直接拒绝。
+- [x] **远端代码已推送（2026-10-27）**：远端从 `8b5cea4`（v1.2.0，10-22）推进到 `c61ad98`，
+      历史完整保留（本地无 `.git`，是在 clone 出的副本上提交后 push 的）。工作区当前不在 git 管理下，
+      后续改动仍走「clone 副本 → 同步文件 → commit → push」这条路。
 - [x] 2026-10-27 第二轮文档同步：README 阶段表改十一段、HANDOFF/SPEC 源码行数对齐实测（3311 行 / Updater 639）、
       修正 HANDOFF 里失实的「12 项断言」验证声明、把 `--device` 无载体的边界写实（§6.1b + SPEC §7 警告框）。
 - [ ] 署名合规：本项目仅学习自用，未包含 Mos 任何源码；Mos 原作 MIT © Caldis。
