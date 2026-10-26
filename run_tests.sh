@@ -484,6 +484,65 @@ RSNC="$(/usr/bin/grep -v '^[[:space:]]*#' scripts/release.sh)"
 /bin/echo "$RSNC" | /usr/bin/grep -q '需要一个值' || F2FAILS="$F2FAILS F2l"
 if [ -z "$F2FAILS" ]; then ok "F2 release.sh 参数/gh 解析"; else bad "F2$F2FAILS"; fi
 
+echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
+# 2026-10-26 加的安全加固此前一条 harness 都没有（run_tests.sh 还停在 10-23），
+# 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。
+# 本 stage 把那些行为固化成可执行断言，直接编译真实 Sources（不是逻辑副本）。
+# 安全背景：App 持有辅助功能权限，「更新」链路等价于远程代码执行入口。
+/bin/cat > "$WORK/main.swift" <<'HSWIFT'
+import Foundation
+import AppKit
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+// H1 强制 https：明文 http 可被链路上任何人改写响应 = RCE，只有回环例外
+require(Updater.validatedURL("https://example.com/f.json") != nil, "H1 https 放行")
+require(Updater.validatedURL("http://example.com/f.json") == nil, "H2 明文 http 远程拒绝")
+require(Updater.validatedURL("http://localhost:8080/f.json") != nil, "H3 localhost 回环放行")
+require(Updater.validatedURL("http://127.0.0.1:18924/f.json") != nil, "H4 127.0.0.1 回环放行")
+require(Updater.validatedURL("http://[::1]:8080/f.json") != nil, "H5 IPv6 回环放行")
+require(Updater.validatedURL("ftp://example.com/f") == nil, "H6 非 http(s) 拒绝")
+require(Updater.validatedURL("") == nil, "H7 空串拒绝")
+require(Updater.validatedURL("not a url") == nil, "H8 非 URL 拒绝")
+require(Updater.validatedURL("HTTPS://EXAMPLE.COM/f.json") != nil, "H9 scheme 大小写不敏感")
+require(Updater.validatedURL("http://127.0.0.1.evil.com/f") == nil, "H10 前缀伪装拒绝")
+require(Updater.validatedURL("http://localhost.evil.com/f") == nil, "H11 子域伪装拒绝")
+// H12 发布者身份：期望的 Team ID
+require(Updater.expectedTeamIdentifier == "6U2DQJ6Z2N", "H12 默认 Team ID")
+// H13 sha256 流式计算与系统 shasum 对齐（实测值，改算法会立刻发现）
+let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("smoose_h_probe.bin")
+try? Data("smoose-checksum-probe".utf8).write(to: tmp)
+let got = (try? Updater.sha256(of: tmp)) ?? ""
+try? FileManager.default.removeItem(at: tmp)
+require(got == "e94d22a37b00f101a11b040835d479a5eb306fe8702ac9420c651d8249f4daa1", "H13 sha256 与 shasum 一致")
+// H14-H19 manifest 的 sha256 三种键名 + 空串/空白处理
+func murl(_ j: String) -> UpdateManifest? { try? JSONDecoder().decode(UpdateManifest.self, from: j.data(using: .utf8)!) }
+require(murl("{\"version\":\"1.2.0\",\"sha256\":\"abc\"}")?.sha256 == "abc", "H14 sha256 键")
+require(murl("{\"version\":\"1.2.0\",\"sha256_sum\":\"def\"}")?.sha256 == "def", "H15 sha256_sum 键")
+require(murl("{\"version\":\"1.2.0\",\"digest\":\"ghi\"}")?.sha256 == "ghi", "H16 digest 键")
+require(murl("{\"version\":\"1.2.0\",\"sha256\":\"\"}")?.sha256 == nil, "H17 空串当未提供")
+require(murl("{\"version\":\"1.2.0\",\"sha256\":\"  abc  \"}")?.sha256 == "abc", "H18 首尾空白裁剪")
+require(murl("{\"version\":\"1.2.0\"}")?.sha256 == nil, "H19 无字段返回 nil")
+// H20 签名校验入口必须存在且拒绝 ad-hoc（真实跑一次 codesign）
+let adhoc = FileManager.default.temporaryDirectory.appendingPathComponent("SmooseAdhocTest.app")
+try? FileManager.default.removeItem(at: adhoc)
+try? FileManager.default.createDirectory(at: adhoc.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+try? Data("#!/bin/sh\n".utf8).write(to: adhoc.appendingPathComponent("Contents/MacOS/Smoose"))
+try? Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>app.smoose.macos</string></dict></plist>".utf8).write(to: adhoc.appendingPathComponent("Contents/Info.plist"))
+let cs = Process(); cs.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+cs.arguments = ["--force", "--sign", "-", adhoc.path]
+try? cs.run(); cs.waitUntilExit()
+do { try Updater.verifySignature(of: adhoc); require(false, "H20 ad-hoc 重签必须被拒") }
+catch { require(true, "H20 ad-hoc 重签被拒") }
+try? FileManager.default.removeItem(at: adhoc)
+if failures == 0 { print("H-OK") } else { exit(1) }
+HSWIFT
+if "$SWIFTC" -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -o "$WORK/h"     Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift     Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift     Sources/App.swift Sources/CursorZoom.swift "$WORK/main.swift" 2>"$WORK/h.log"; then
+  HFAILS="$("$WORK/h" 2>&1 | grep '^FAIL' || true)"
+  if [ -z "$HFAILS" ]; then ok "H 安全加固（https 强制 / Team ID / sha256 / 拒 ad-hoc）"; else bad "H $HFAILS"; fi
+else
+  bad "H 编译失败$(tail -3 "$WORK/h.log")"
+fi
+
 echo
 echo "== 结果: PASS=$PASS FAIL=$FAIL =="
 [ "$FAIL" = "0" ]

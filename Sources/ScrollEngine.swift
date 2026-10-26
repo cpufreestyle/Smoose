@@ -63,6 +63,9 @@ final class ScrollEngine {
         // 配置热更新后重置亚像素累积，避免倍率切换瞬间出现一次跳变
         pointerRemX = 0
         pointerRemY = 0
+        // 触发时机开关切换时清掉残留的半边按钮状态，否则某个键会卡在
+        // 「DOWN 已吞、UP 不再认」的状态里直到重启
+        suppressedButtons.removeAll()
     }
 
     func setActiveApp(_ id: String?) {
@@ -196,12 +199,17 @@ final class ScrollEngine {
         lock.lock()
         let speedManaged = config.pointerSpeedManaged
         let factor = config.pointerSpeedFactor
+        // 前台 App 用缓存，不在 tap 回调里查 NSWorkspace：
+        // NSWorkspace.shared.frontmostApplication 是一次跨进程同步查询，
+        // 而 mouseMoved 在 120Hz 屏上每秒能来几百次 —— 每次都查会直接把指针延迟顶上去
+        // （2026-10-26 审核发现的 P1）。activeAppID 由 AppDelegate 监听
+        // didActivateApplicationNotification 维护，tap 里只读不查。
+        let front = activeAppID
         lock.unlock()
 
         // Dock / MenuBar 等 UI 对 hover 判定很敏感：改写后的 delta 会丢失
         // 原始相对运动语义，导致图标不再放大。因此这些窗口在前台时不改写。
-        if let front = NSWorkspace.shared.frontmostApplication,
-           front.bundleIdentifier == "com.apple.dock" || front.bundleIdentifier == "com.apple.finder" {
+        if front == "com.apple.dock" || front == "com.apple.finder" {
             return Unmanaged.passUnretained(event)
         }
 
@@ -360,11 +368,18 @@ final class ScrollEngine {
                 } else {
                     shouldTrigger = false
                 }
-            } else {
-                // 抑制 DOWN，等待 UP 到来时成对结算
+            } else if let rawAction = raw, let a = ButtonAction(rawValue: rawAction), a != .none {
+                // 抑制 DOWN，等待 UP 到来时成对结算。
+                // 必须先确认这个键真的绑了动作：早先这里是无条件吞 DOWN，
+                // 结果未绑定的侧键变成「系统只收到 UP 收不到 DOWN」，浏览器前进/后退
+                // 等原生侧键功能直接失效（2026-10-26 审核发现的 P1）。
                 suppressedButtons.insert(btn)
                 lock.unlock()
                 return nil
+            } else {
+                // 没绑动作 → 原样放行，把按键完整交还系统
+                lock.unlock()
+                return Unmanaged.passUnretained(event)
             }
         }
         lock.unlock()

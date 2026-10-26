@@ -13,9 +13,16 @@
 | 最小步长 | 低于此值的微推会被放大，避免轻推无反应 |
 | 双轴独立 | 垂直 / 水平各自独立开关平滑与方向反转 |
 | 忽略触控板 | 触控板与 Magic Mouse 的连续滚动默认原样透传 |
-| 每应用配置 | 按 bundle id 单独配置，或从「预设」一键套用（干脆 / 丝滑 / 浏览器 / 原生 App / 跳过） |
-| 按键绑定 | 中键与侧键 3/4/5 绑定到调度中心、启动台、⌘⇥、显示桌面、浏览器前后、切换桌面、截图面板 |
+| 每格行数 | 只作用于离散滚轮鼠标，不影响触控板连续滚动 |
+| 每应用配置 | 按 bundle id 单独配置，或从「预设」一键套用（默认 / 干脆 / 丝滑 / 浏览器 / 原生 App / 聊天软件 / 跳过此 App） |
+| 修饰键透传 | 按住 ⌘⌥⌃⇧ 等修饰键时跳过接管、原样透传（精确操作场景） |
+| 按键绑定 | 中键与侧键 3/4/5 绑定到调度中心、启动台、⌘⇥、显示桌面、浏览器前后、切换桌面、截图面板等；支持前后键互换、抬起时触发、按应用单独绑定 |
+| 指针加速度 | 直接改写 IOHIDSystem 的 HID 参数（等价于 LinearMouse 核心能力），0 = 线性无加速 |
+| 指针速度倍率 | Event Tap 原地改写 `mouseMoved` 的 delta（`HIDPointerResolution` 在现代 macOS 不可写，所以不走 HID） |
+| 指针放大 | 开关系统光标放大 |
 | 开机启动 | SMAppService 登录项 |
+| 权限自愈 | 授权被撤销自动停 tap，恢复后自动重建；菜单栏绿点 = 已授权，红点 = 未授权 |
+| 自动更新 | 版本源拉取 → SemVer 比较 → 增量进度下载 → **签名校验** → 替换重启，零第三方依赖 |
 
 ## 首次使用
 
@@ -59,23 +66,30 @@
 
 ```bash
 cd Smoose
+export SMOOSE_SIGN_ID="Apple Development: 你的名字 (TEAMID)"   # 见下方说明
 ./build.sh            # 产出 build/Smoose.app
 cp -R build/Smoose.app /Applications/
 ```
 
-源码：`Sources/Model.swift`（配置模型）、`Sources/ScrollAxis.swift`（插值引擎，纯逻辑）、
-`Sources/ScrollEngine.swift`（事件拦截）、`Sources/Views.swift`（SwiftUI 界面）、`Sources/App.swift`。
+**签名身份走环境变量 `SMOOSE_SIGN_ID`**。不设置会回落 ad-hoc 并打印警告 —— ad-hoc 每次 cdhash 都变，
+**辅助功能授权会在每次重新编译后失效**。用真实证书签名时 DR 绑定证书，重新编译不掉授权。
+
+源码 11 个文件：`main.swift`（纯 AppKit 入口）、`App.swift`（AppDelegate / 状态栏 / 窗口自愈）、
+`Views.swift`（界面）、`Model.swift`（配置模型）、`ScrollAxis.swift`（插值引擎，纯逻辑）、
+`ScrollEngine.swift`（事件拦截 + 帧驱动 + 指针速度）、`PointerController.swift`（HID 指针加速度）、
+`Actions.swift`（按键动作）、`CursorZoom.swift`（光标放大）、`Updater.swift` + `UpdateModel.swift`（自动更新）。
 
 ### 一键验证（harness）
 
 ```bash
-./run_tests.sh             # A B C D E F F2 G G2 G3 十段，离线
+./run_tests.sh             # A B C D E F F2 G G2 G3 H 十一段，离线
 ./run_tests.sh --device    # + 真机断言
 ```
 
-十段分别是：A 插值与距离守恒、B 每应用命中、C 按键动作枚举、D 自动更新决策、
+十一段分别是：A 插值与距离守恒、B 每应用命中、C 按键动作枚举、D 自动更新决策、
 E 构建签名、F 发布产出端、F2 `release.sh` 参数与 `gh` 路径解析、
-G 真实 `UpdateModel` 反 drift、G2 `httpMessage` 反 drift、G3 `relaunch` 退出路径反 drift。
+G 真实 `UpdateModel` 反 drift、G2 `httpMessage` 反 drift、G3 `relaunch` 退出路径反 drift、
+H 更新链路安全加固（HTTPS 强制 / sha256 校验 / TeamIdentifier 身份比对 / codesign 拒绝 ad-hoc 包）。
 改引擎 / 持久化 / 自动更新代码后必须跑一遍，全部 PASS 才算完成。契约与断言清单见 [SPEC.md](SPEC.md)。
 
 ⚠️ 两条写 harness 时踩过的坑：
@@ -102,14 +116,28 @@ swiftc -O -sdk $(xcrun --sdk macosx --show-sdk-path) -target arm64-apple-macos14
 ./scripts/release.sh --github --repo cpufreestyle/Smoose
 ```
 
-脚本会构建 → 打包 `dist/Smoose-<version>.zip` → 自检（顶层 `Smoose.app` / bundle id / 签名）→ 发 Release 并上传 asset。
+脚本会构建 → 打包 `dist/Smoose-<version>.zip` → 自检（顶层 `Smoose.app` / bundle id / 签名 / **TeamIdentifier**）→ 发 Release 并上传 asset。
 仓库必须是 **public**：App 拉版本源不带认证，private 仓库的 API 会返 404。
+同时产出 `dist/Smoose-<version>.json`（带 sha256），可直接自托管当版本源。
 
-用户也可在「关于 → 自动更新」里填自建 JSON 版本源：
+用户也可在「关于 → 自动更新」里填自建 JSON 版本源（`sha256` 可选，给了客户端就会校验）：
 
 ```json
-{"version":"1.2.0","url":"https://example.com/Smoose.zip","notes":"...","minSystem":"14.0"}
+{"version":"1.3.0","url":"https://example.com/Smoose.zip","sha256":"<小写的 64 位十六进制>","notes":"...","minSystem":"14.0"}
 ```
+
+### 更新链路的安全约束
+
+App 持有辅助功能权限（能监听并合成全局输入），所以「自动更新」等价于远程代码执行入口。客户端强制四道关：
+
+1. 版本源与下载地址都必须是 **https**（`http://localhost` / `127.0.0.1` / `::1` 例外，留给自测）
+2. 版本源给了 `sha256` 就先校验，不匹配直接中止
+3. 解压后 `codesign --verify --deep --strict`
+4. 比对 `TeamIdentifier` 与 `Updater.expectedTeamIdentifier`（当前 `6U2DQJ6Z2N`）；拷贝到 `/Applications` 后再验一次，失败回滚原版
+
+> 注意：`TeamIdentifier` **不等于**签名身份 CN 括号里那串。本机用
+> `Apple Development: qm0819@hotmail.com (5F66DDWD6H)` 签名，`codesign` 报的却是 `6U2DQJ6Z2N`。
+> fork 请改 `Updater.expectedTeamIdentifier`，或在 Info.plist 里加 `SmooseUpdateTeamID` 覆盖。
 
 ## 与 Mos 的差距 / 已知限制
 

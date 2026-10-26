@@ -86,6 +86,16 @@ if ! /usr/bin/codesign --verify --deep "$CHECK/$NAME.app" 2>/dev/null; then
   /bin/echo "✗ zip 里的 App 签名校验失败（zip -r 少了 -y？）" >&2
   exit 1
 fi
+# 光有 codesign --verify 不够：ad-hoc 签名也能过完整性校验，但拿不到 TeamIdentifier，
+# 而用户端的 Updater 正是靠 TeamIdentifier 判断「这是不是官方发的包」。
+# 少了这一步，打出来的就是一个用户永远装不上的包（2026-10-26）。
+TEAM="$(/usr/bin/codesign --display --verbose=4 "$CHECK/$NAME.app" 2>&1 \
+  | /usr/bin/awk -F= '/TeamIdentifier=/{print $2; exit}')"
+if [ -z "$TEAM" ] || [ "$TEAM" = "not set" ]; then
+  /bin/echo "✗ 打出的 App 是 ad-hoc 签名（没有 TeamIdentifier），用户端会被签名校验拒绝安装" >&2
+  /bin/echo "  先设置签名身份再重打：export SMOOSE_SIGN_ID=\"Apple Development: 你的名字 (TEAMID)\"" >&2
+  exit 1
+fi
 /bin/rm -rf "$CHECK"
 
 SHA="$(/usr/bin/shasum -a 256 "$ZIP" | /usr/bin/awk '{print $1}')"
@@ -130,3 +140,25 @@ if [ "$UPLOAD" = "1" ]; then
   "$GH" release upload "$TAG" "$ZIP" --repo "$REPO" --clobber
   /bin/echo "✓ https://github.com/$REPO/releases/tag/$TAG"
 fi
+
+# 6. 产出可直接自托管的版本源 JSON（带 sha256）。
+#    GitHub Releases API 的 asset 里没有校验和字段，所以 sha256 只能靠自建版本源传递；
+#    Updater 只在 manifest 里读到 sha256 时才校验，读不到就跳过 —— 不影响已有流程。
+MANIFEST="$DIST/$NAME-$VERSION.json"
+if [ "$UPLOAD" = "1" ] && [ -n "${REPO:-}" ]; then
+  DLURL="https://github.com/$REPO/releases/download/v$VERSION/$NAME-$VERSION.zip"
+else
+  DLURL=""
+fi
+/bin/cat > "$MANIFEST" <<JSON
+{
+  "version": "$VERSION",
+  "url": "$DLURL",
+  "sha256": "$SHA",
+  "minSystem": "14.0",
+  "notes": "$NAME $VERSION"
+}
+JSON
+/bin/echo "✓ $MANIFEST"
+/bin/echo "  url 为空表示还没上传；填好后把这个 JSON 传到任意 https 静态托管，"
+/bin/echo "  再把地址填进「关于 → 自动更新 → 版本源」，即可启用 sha256 校验"

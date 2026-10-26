@@ -123,7 +123,10 @@ final class PointerController: ObservableObject {
                                                    NSNumber(value: ioFixed))
             allOK = allOK && ok
             let back = (prop(device.client, device.accelKey) as? NSNumber)?.doubleValue ?? -1
-            lines.append("\(device.name)  \(device.accelKey): \(String(format: "%.3f", want / 65536))"
+            // want 已经是 UI 侧的浮点值（0...6），写出去时才乘 65536；
+            // 回读值 / 基线是 IOFixed，要除回来。三者必须同一量纲才能对比
+            // （早先把 want 又除了一次 65536，显示成 0.000，看着像写入失败 —— 2026-10-26 修）
+            lines.append("\(device.name)  \(device.accelKey): \(String(format: "%.3f", want))"
                          + " 回读 \(String(format: "%.3f", back / 65536))"
                          + "  系统默认 \(String(format: "%.3f", base / 65536))")
         }

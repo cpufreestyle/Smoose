@@ -1,0 +1,11 @@
+# 构建产物
+build/
+dist/
+.build/
+logs/
+
+# 系统垃圾
+.DS_Store
+
+# screencapture 误建的产物：-R 参数缺rect时会写出一个名为 "-" 的文件
+/-

@@ -87,10 +87,25 @@
 | G2 | 文本守卫 `Sources/Updater.swift` 的 `httpMessage` 分支 | 副本更新了、真源码没更新 |
 | G3 | 文本守卫 `Sources/Updater.swift` 的 `relaunch` 退出路径 | `NSApp` 隐式解包崩溃回归 |
 | F2 | `release.sh` 参数解析 + `gh` 路径解析 | `--repo owner/name` / Homebrew gh 路径回归 |
+| H | 编译真实 `Sources/` 断言自动更新安全加固 | https 强制 / Team ID / sha256 / 拒 ad-hoc 回归 |
 
 用法：
-    ./run_tests.sh             # A B C D E F F2 G G2 G3（离线）
+    ./run_tests.sh             # A B C D E F F2 G G2 G3 H（离线）
     ./run_tests.sh --device    # + D（需 Smoose 已跑且已授权）
+
+> ⚠️ **`--device` 的真实边界（2026-10-27 实测确认，勿再重复尝试）**：`--device` 段当前
+> **不在 `run_tests.sh` 里实现**，SPEC 早期把它列为 D 段真机断言，但没有任何可执行断言。
+> 原因是 macOS 在 CLI / harness 上下文里把这条路全堵了，逐条实测过：
+>
+> | 方案 | 实测结果 |
+> | --- | --- |
+> | CLI 进程装 `CGEventTap` + 合成事件 post 到 `.cghidEventTap` / `.cgSessionEventTap` / `.cgAnnotatedSessionEventTap` | tap 创建后 `tapIsEnabled` 立刻变 `false`，轮询 re-enable 也救不回；注入的 scrollWheel / mouseMoved **0 命中**。即便 `AXIsProcessTrustedWithOptions` 返回 true 也不管用 |
+> | `lldb -p <pid>` attach 进已授权的 Smoose，Swift 表达式调 `handlePointerMove` | 能 attach，但产物 strip 过调试符号，`image lookup -s handlePointerMove` 空，`expr -l swift` 报 `cannot find 'ScrollEngine' in scope` |
+> | `DYLD_INSERT_LIBRARIES` 注入断言 dylib 到 app 副本（bundle id 与真机一致以复用 TCC 授权） | app 副本起不来（`sandbox_extension_issue_file_to_process`）；换到合法路径后进程能起，但 `@_cdecl` 构造器不被触发、加 `__attribute__((constructor))` shim 后进程起不来。符号与 app 自身 `Sources/` 重复定义 |
+>
+> 结论：**指针速度改写这条链路目前没有可自动化的真机断言载体**。改 `handlePointerMove`
+> 之后只能人工验证：开「指针速度倍率」→ 移动鼠标 → 手感是否随倍率变化。
+> 相关源码逻辑由 H 段之外的编译期断言覆盖不到，请勿在 harness 里放一个假绿的 `--device`。
 
 ## 8. 配置注入与现场恢复
 
@@ -367,6 +382,15 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 - **下载进度是真实增量**：用 `URLSessionDownloadDelegate` 而不是 completion-handler，否则百分比一直停在 0% 然后突然跳完（2026-10-22 缺陷）。
 - **安装过程在后台队列**：解压 + 拷贝丢到 `DispatchQueue.global(qos: .userInitiated)`，主线程不卡，「正在安装」界面保持响应。
 - **安装前校验 bundle id**：版本源是用户可填的任意地址，替换 `/Applications/Smoose.app` 前必须读新 App 的 `CFBundleIdentifier`，不等于 `app.smoose.macos` 就中止（`UpdateInstallError.wrongBundle`），防止一个不相关的 App 覆盖掉用户的正版。
+- **更新链路是远程代码执行入口，必须验身份（2026-10-26 P0，2026-10-27 补 harness）**：App 持有辅助功能权限，所以「更新」等同于把任意代码放进高权限位置。四道关缺一不可：
+  1. **强制 HTTPS**：`Updater.validatedURL(_:)` 只放行 `https`；`http` 仅限回环（`localhost` / `127.0.0.1` / `::1`，供自建源自测）。**版本源地址与下载地址都过这一关**。明文 http 的响应可被链路上任何人改写 = 一次劫持即 RCE。IPv6 回环要先把 `URLComponents.host` 的方括号剥掉再比（2026-10-27 实测：不剥则 `[::1]` 永远匹配不上，承诺的放行失效）。
+  2. **SHA-256 校验**：`UpdateManifest.sha256`（也认 `sha256_sum` / `digest`），版本源给了就验、没给就跳过（不阻断既有流程）。流式计算，不把整个包读进内存。
+  3. **codesign 完整性**：`codesign --verify --deep --strict`。
+  4. **发布者身份**：比对 `codesign --display --verbose=4` 输出的 `TeamIdentifier` 与 `Updater.expectedTeamIdentifier`（默认 `6U2DQJ6Z2N`，可用 Info.plist 的 `SmooseUpdateTeamID` 覆盖）。ad-hoc 签名能过完整性校验但拿不到 Team ID，必须拒。拷贝落盘到 `/Applications` 之后**再验一次**，失败回滚原版——不留「旧版没了、新版不可信」的半截状态。
+  ⚠️ **Team ID 不是证书名括号里那串**：本机签名身份是 `Apple Development: qm0819@hotmail.com (5F66DDWD6H)`，但 `codesign` 报告的 `TeamIdentifier=6U2DQJ6Z2N`。照抄证书名会让每次更新都被拒（2026-10-26 实测踩到）。
+  ⚠️ **bundle id 不是身份校验**：它只是 Info.plist 里的字符串，谁都能写，只能挡住「下错包」，挡不住攻击者。
+- **发布端必须同标准自检**：`scripts/release.sh` 打出包后除 bundle id / zip 布局外，还要确认拿得到 `TeamIdentifier`——ad-hoc 直接 `exit 1`，避免产出「用户永远装不上」的包；并额外产出 `dist/Smoose-<ver>.json`（含 sha256），可直接自托管当版本源。
+- **构建签名三级回退**（2026-10-27）：`SMOOSE_SIGN_ID` 环境变量 → 自动探测本机钥匙串里的 Apple Development 证书 → ad-hoc 并明确警告。只认环境变量会让默认路径坏掉：不 export 就产出 ad-hoc 包，被上面的发布端自检拒绝（2026-10-27 实测 F stage 直接红）。
 - **重启自己不能崩**：`relaunch()` 里退出旧进程必须写 `if let app = NSApp { app.terminate(nil) } else { exit(0) }`。`NSApp` 是隐式解包的全局 optional，在探针 / 单元测试 / 无 NSApplication 的上下文里是 nil，直接 `NSApp.terminate(nil)` 会 `Fatal error: Unexpectedly found nil`（2026-10-22 端到端实测崩在这行）。
 - **发布端必须真签名**：测试用的「假新版」不能靠 `plutil` 改 Info.plist 生成——那会让 `_CodeSignature` 与 Info.plist 不符，`codesign --verify` 报 `invalid Info.plist`，装上去 LaunchServices 直接拒绝启动（`Launch failed`）。必须改版本号后重跑 `build.sh` 重新签名。
 
@@ -383,7 +407,8 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 - D8 2026-10-22 harness `PASS=5 FAIL=0`（A 插值 / B profile / C ButtonAction / D 自动更新决策 / E 构建签名）。
 - D9 Asset 的 snake_case 键映射（2026-10-22 真实缺陷回归）：GitHub 发 `browser_download_url` / `content_type`，而 `Asset` 若没有 `CodingKeys`，合成解码按属性名 camelCase 查找，`name` 因为两种拼写相同仍能解出，于是「发现了新版但 `url=nil`」——用户看得到新版却永远下载不到安装包（真机「关于」页表现为「版本源没有提供安装包地址」）。D9 snake_case URL / D9b 仅 MIME / D9c 仅 `.zip` 后缀 / D9d 非归档 asset 忽略。
 - D9e `name` 兜底只在它本身是合法版本号时才生效：`{"name":"Smoose 1.5.0"}` 这种 GitHub release 标题 `SemVer` 解析不出来，必须判 `malformed` 而不是瞎猜一个版本号；`{"name":"1.5.0"}` 才走 `.available("1.5.0")`。（2026-10-22：这条断言原本写反了，与真源码行为相反，且一直被下面的 FIFO 假绿掩盖。）
-- **D11 当前 harness 状态（2026-10-22 第六轮）**：`./run_tests.sh` → `PASS=10 FAIL=0`（A 插值 / B profile / C ButtonAction / D 自动更新决策 / E 构建签名 / G 真实 UpdateModel 反 drift / G2 httpMessage 反 drift / G3 relaunch 退出路径 / F 发布产出端 / F2 release.sh 参数与 gh 解析）。上面各节的 `PASS=4` / `PASS=5` 是当日快照，不是当前值。
+- **D11 当前 harness 状态（2026-10-27 第七轮）**：`./run_tests.sh` → `PASS=11 FAIL=0`（A 插值 / B profile / C ButtonAction / D 自动更新决策 / E 构建签名 / G 真实 UpdateModel 反 drift / G2 httpMessage 反 drift / G3 relaunch 退出路径 / F 发布产出端 / F2 release.sh 参数与 gh 解析 / H 安全加固）。上面各节的 `PASS=4` / `PASS=5` 是当日快照，不是当前值。
+- **H 安全加固断言（2026-10-27 新增，直接编译真实 `Sources/`）**：10-26 加的安全加固原先一条断言都没有（`run_tests.sh` 还停在 10-23），H 把它们固化成 20 项可执行断言——HTTPS 强制 11 项（H1-H11，含 IPv6 回环、`127.0.0.1.evil.com` / `localhost.evil.com` 前缀子域伪装）、默认 Team ID（H12）、sha256 与系统 `shasum` 逐字节对齐（H13）、manifest 三种 sha256 键名与空串/空白处理（H14-H19）、真实跑 `codesign` 确认 ad-hoc 重签被拒（H20）。
 - D12 `relaunch()` 退出路径（2026-10-22 第五轮，端到端实测崩溃）：`NSApp` 是 `NSApplication?` 的隐式解包全局，在没有 `NSApplication` 的上下文里是 nil，`NSApp.terminate(nil)` 直接 `Fatal error: Unexpectedly found nil`。契约：必须 `if let app = NSApp { app.terminate(nil) } else { exit(0) }`。真源码由 G3 反 drift 守住（已做变异验证：把 `Self.terminateSelf()` 改回 `NSApp.terminate(nil)`，G3 如预期 FAIL G32/G36）。
 - D14 默认版本源真实可用（2026-10-22 第六轮）：仓库已建为 public 并发布 Release，`GET https://api.github.com/repos/cpufreestyle/Smoose/releases/latest` 返回 200，真源码 `UpdateCheck.decide` 解出 `available(1.2.0)` + 下载地址，安装包 HTTP 200 可下载；整条「默认源 → 发现新版 → 下载 → 安装 → 重启」在真机跑通。
 - D13 端到端闭环（2026-10-22 第五轮，真机实测）：本地 HTTP 版本源 + 真实签名的 1.2.0 安装包，跑通「检查 → 增量进度下载（0→100%，13 帧）→ 解压 → bundle id 校验 → 替换 /Applications/Smoose.app → relaunch → 新进程以 1.2.0 运行」。版本比较回归：当前 1.2.0/1.2.1/1.3.0 对 feed 1.2.0 均 `upToDate`，1.1.0 → `available`。

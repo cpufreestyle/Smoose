@@ -76,12 +76,17 @@ struct UpdateManifest: Decodable, Equatable {
     var url: String?
     var notes: String?
     var minSystem: String?
+    /// 安装包的 SHA-256（小写十六进制）。可选：只有版本源提供了才校验。
+    /// 有了它，即使签名校验被绕过或被替换成同 Team ID 的旧包，内容也对不上。
+    var sha256: String?
 
-    init(version: String, url: String? = nil, notes: String? = nil, minSystem: String? = nil) {
+    init(version: String, url: String? = nil, notes: String? = nil,
+         minSystem: String? = nil, sha256: String? = nil) {
         self.version = version
         self.url = url
         self.notes = notes
         self.minSystem = minSystem
+        self.sha256 = sha256
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -90,6 +95,7 @@ struct UpdateManifest: Decodable, Equatable {
         case minSystem, minSystemVersion = "minimum_system_version"
         case assets, browserDownloadURL = "browser_download_url"
         case contentType = "content_type"
+        case sha256, sha256Sum = "sha256_sum", digest
     }
 
     private struct Asset: Decodable {
@@ -136,6 +142,11 @@ struct UpdateManifest: Decodable, Equatable {
             ?? c.decodeIfPresent(String.self, forKey: .releaseNotes))
         minSystem = try (c.decodeIfPresent(String.self, forKey: .minSystem)
             ?? c.decodeIfPresent(String.self, forKey: .minSystemVersion))
+        // 校验和三种常见写法都认；空串当没有提供
+        let rawSum = try (c.decodeIfPresent(String.self, forKey: .sha256)
+            ?? c.decodeIfPresent(String.self, forKey: .sha256Sum)
+            ?? c.decodeIfPresent(String.self, forKey: .digest))
+        sha256 = (rawSum?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
 
         let assets = try c.decodeIfPresent([Asset].self, forKey: .assets) ?? []
         // GitHub 的 release.url 是 API 地址不是下载地址，只有自建清单的 url/download_url
