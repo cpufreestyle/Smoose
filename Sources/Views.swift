@@ -619,6 +619,9 @@ struct UpdateStatusView: View {
             switch updater.phase {
             case .idle:
                 EmptyView()
+            case .upToDate(let v):
+                Label("已是最新版本 v\(v)", systemImage: "checkmark.circle")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             case .updateFound(let v):
                 VStack(alignment: .leading, spacing: 6) {
                     Label("发现新版本 v\(v)", systemImage: "sparkles")

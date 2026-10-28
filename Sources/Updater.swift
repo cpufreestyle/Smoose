@@ -48,6 +48,10 @@ final class Updater: ObservableObject {
     enum Phase: Equatable {
         case idle
         case checking
+        /// 检查成功且已是最新。idle 与它的区别：idle 是「从没查过 / 刚启动」，
+        /// upToDate 是「用户点了检查，结果就是没有新版」——必须有可见反馈，
+        /// 否则用户会把「没有新版」误读成「检查失败」（2026-10-29 实测反馈）。
+        case upToDate(String)
         /// 发现了新版本，等用户点「下载并安装」。带上版本号，界面好显示。
         case updateFound(String)
         case downloading(progress: Double)
@@ -208,7 +212,7 @@ final class Updater: ObservableObject {
                 case .upToDate:
                     self.recordCheck(failed: false)
                     self.available = nil
-                    if interactive { self.phase = .idle }
+                    if interactive { self.phase = .upToDate(Self.currentVersion) }
                 case .available(let m):
                     self.recordCheck(failed: false)
                     if self.skippedVersions.contains(m.version) {
@@ -525,12 +529,10 @@ final class Updater: ObservableObject {
             }
         }
         guard let team, !team.isEmpty, team != "not set" else {
-            throw UpdateInstallError.signatureInvalid(
-                "安装包没有可用的开发者签名（ad-hoc 或已脱签），无法确认发布者身份")
+            throw UpdateInstallError.notSigned
         }
         guard team == expected else {
-            throw UpdateInstallError.signatureInvalid(
-                "安装包签名 Team ID 是「\(team)」，与预期的「\(expected)」不一致，已中止安装")
+            throw UpdateInstallError.teamMismatch(actual: team, expected: expected)
         }
     }
 
@@ -605,12 +607,20 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
 // MARK: - 安装失败原因
 
 /// 每种失败都对应一句用户能照着做的话，而不是笼统的「安装失败」。
-private enum UpdateInstallError: Error {
+/// 故意不写成 private：harness 的 H 段要按 case 断言拒因。
+/// 如果只有一个笼统的错误，「被拒了」和「因为 ad-hoc 被拒」在断言层面无法区分，
+/// 断言就会退化成一个永远为真的弱命题（见 HANDOFF §6.1c）。
+enum UpdateInstallError: Error {
     case unsupportedArchive(String)
     case unzipFailed
     case appNotFound
     case wrongBundle(String)
+    /// codesign 自己就没通过：内容被改 / 缺子部件 / 根本没签
     case signatureInvalid(String)
+    /// 签了，但没有可用的开发者身份（ad-hoc 或已脱签），无法确认发布者
+    case notSigned
+    /// 签了、也有 Team ID，但不是我们期望的那个发布者
+    case teamMismatch(actual: String, expected: String)
     case checksumMismatch(expected: String, actual: String)
 
     var message: String {
@@ -625,6 +635,10 @@ private enum UpdateInstallError: Error {
             return "安装包里的 App bundle id 是「\(id)」而不是 Smoose，已中止覆盖"
         case .signatureInvalid(let why):
             return "已中止安装：\(why)。这通常是版本源被指向了非官方地址，请检查「关于 → 自动更新」里的版本源"
+        case .notSigned:
+            return "安装包没有可用的开发者签名（ad-hoc 或已脱签），无法确认发布者身份，已中止安装"
+        case .teamMismatch(let actual, let expected):
+            return "安装包签名 Team ID 是「\(actual)」，与预期的「\(expected)」不一致，已中止安装"
         case .checksumMismatch(let expected, let actual):
             return "安装包校验和不匹配（期望 \(expected.prefix(16))…，实际 \(actual.prefix(16))…），文件可能在传输中被替换，已中止安装"
         }

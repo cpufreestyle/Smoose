@@ -4,6 +4,11 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
 SWIFTC="$(/usr/bin/xcrun --sdk macosx --find swiftc)"
+CC="$(/usr/bin/xcrun --sdk macosx --find cc)"
+# 受限环境（CI / agent 沙箱）里 Swift 宏插件服务器起不来 —— 它自己要套 sandbox，
+# 而外层已禁止嵌套 sandbox_apply，表现为 SwiftUIMacros.StateMacro ... malformed response。
+# 加 -disable-sandbox 让编译器子进程不套沙箱即可。普通终端不需要，默认留空。
+: "${SMOOSE_SWIFT_EXTRA:=}"
 WORK="/tmp/smoose_harness_$$"
 mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
@@ -12,7 +17,7 @@ ok()  { echo "PASS  $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL  $1"; FAIL=$((FAIL+1)); }
 echo "== A: 插值离线测试 =="
 cp Tests/InterpTest.swift "$WORK/main.swift"
-if "$SWIFTC" -O -sdk "$SDK" -target arm64-apple-macos14.0 -o "$WORK/interp" Sources/ScrollAxis.swift "$WORK/main.swift" 2>"$WORK/a.log"; then
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -O -sdk "$SDK" -target arm64-apple-macos14.0 -o "$WORK/interp" Sources/ScrollAxis.swift "$WORK/main.swift" 2>"$WORK/a.log"; then
   OUT="$("$WORK/interp" 2>/dev/null || true)"
   BADN="$(printf '%s\n' "$OUT" | grep '预期总距离' | sed -E 's/.*预期总距离=([0-9.]+)px 实际=([0-9.]+)px/\1 \2/' | awk 'NF==2 && $1 != $2 {c++} END {print c+0}')"
   if [ "$BADN" = "0" ] && printf '%s\n' "$OUT" | grep -q "方向突变"; then ok "A1-A5 插值与距离守恒"; else bad "A 值不符（$BADN 场景）"; fi
@@ -49,7 +54,7 @@ s.masterEnabled = false
 require(s.profile(for: "com.test.app") == nil, "master off kills all")
 print("B-OK")
 BSWIFT
-if "$SWIFTC" -Onone -sdk "$SDK" -o "$WORK/b" "$WORK/b.swift" 2>"$WORK/b.log" && "$WORK/b" >/dev/null; then ok "B profile 命中"; else bad "B $(tail -2 "$WORK/b.log")"; fi
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$WORK/b" "$WORK/b.swift" 2>"$WORK/b.log" && "$WORK/b" >/dev/null; then ok "B profile 命中"; else bad "B $(tail -2 "$WORK/b.log")"; fi
 echo "== C: ButtonAction 枚举完整性 =="
 awk '/^enum ButtonAction/,/^}/' Sources/Model.swift > "$WORK/enum.txt"
 NCASE="$(grep -c "^    case " "$WORK/enum.txt" || true)"
@@ -332,7 +337,7 @@ DSWIFT
 # 就完成判断，永远返回「空」，于是断言全 FAIL 也照样 PASS（2026-10-22 实测假绿：
 # 把 D 的 case 404 改成「版本源返回 HTTP 404」后，屏幕打出三条 FAIL D10x 却仍报 PASS=8）。
 # 必须把 grep 结果先收进变量再判断，且 D 二进制自己有失败要 exit 1。
-if "$SWIFTC" -Onone -sdk "$SDK" -o "$WORK/d" "$WORK/d.swift" 2>"$WORK/d.log"; then
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$WORK/d" "$WORK/d.swift" 2>"$WORK/d.log"; then
   DFAILS="$("$WORK/d" 2>&1 | grep '^FAIL' || true)"
 else
   DFAILS="$(tail -3 "$WORK/d.log")"
@@ -373,7 +378,7 @@ let m = try? JSONDecoder().decode(UpdateManifest.self, from: "{\"tag_name\":\"v1
 require(m?.notes == "release notes here", "G10 body mapped to notes")
 if failures == 0 { print("G-OK") } else { exit(1) }
 GSWIFT
-if "$SWIFTC" -Onone -sdk "$SDK" -o "$WORK/g" Sources/UpdateModel.swift "$WORK/main.swift" 2>"$WORK/g.log" && "$WORK/g" >"$WORK/g.out" 2>&1; then ok "G 真实 UpdateModel 反 drift"; else bad "G $(grep '^FAIL' "$WORK/g.out" 2>/dev/null | head -3; tail -2 "$WORK/g.log")"; fi
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$WORK/g" Sources/UpdateModel.swift "$WORK/main.swift" 2>"$WORK/g.log" && "$WORK/g" >"$WORK/g.out" 2>&1; then ok "G 真实 UpdateModel 反 drift"; else bad "G $(grep '^FAIL' "$WORK/g.out" 2>/dev/null | head -3; tail -2 "$WORK/g.log")"; fi
 
 echo "== G2: Updater.httpMessage 反 drift（真源码文本守卫，Updater.swift 无法离线编译）=="
 # Updater.swift 依赖 AppKit + Preferences + UpdateManifest，编不出可执行断言，
@@ -395,7 +400,30 @@ require(src.contains("还没有发布记录"), "G17 default 404 text present")
 require(src.contains("版本源返回 HTTP \\(code)"), "G18 generic code form present")
 if failures == 0 { print("G2-OK") } else { exit(1) }
 GS2SWIFT
-if "$SWIFTC" -Onone -sdk "$SDK" -o "$GM2/g2" "$GM2/main.swift" 2>"$GM2/g2.log" && "$GM2/g2" "$ROOT/Sources/Updater.swift" >"$GM2/g2.out" 2>&1; then ok "G2 httpMessage 反 drift"; else bad "G2 $(grep '^FAIL' "$GM2/g2.out" 2>/dev/null | head -3; tail -2 "$GM2/g2.log")"; fi
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$GM2/g2" "$GM2/main.swift" 2>"$GM2/g2.log" && "$GM2/g2" "$ROOT/Sources/Updater.swift" >"$GM2/g2.out" 2>&1; then ok "G2 httpMessage 反 drift"; else bad "G2 $(grep '^FAIL' "$GM2/g2.out" 2>/dev/null | head -3; tail -2 "$GM2/g2.log")"; fi
+
+echo "== G2b: upToDate 可见反馈反 drift（2026-10-29 用户反馈「检测更新没有成功」）=="
+# 检查成功且已是最新时，phase 必须进 .upToDate(版本号) 而不是 .idle，
+# Views 里必须有对应显示 —— 否则用户看到零反馈，把「没有新版」误读成「检查失败」。
+GM2B="$(mktemp -d)"
+/bin/cat > "$GM2B/main.swift" <<'GS2BSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+let updater = FileManager.default.contents(atPath: CommandLine.arguments[1]).map { String(decoding: $0, as: UTF8.self) } ?? ""
+let views = FileManager.default.contents(atPath: CommandLine.arguments[2]).map { String(decoding: $0, as: UTF8.self) } ?? ""
+func codeOnly(_ s: String) -> String {
+    s.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+}
+let u = codeOnly(updater)
+let v = codeOnly(views)
+require(u.contains("case upToDate(String)"), "G2b-1 Phase.upToDate(String) 存在")
+require(u.contains(".upToDate(Self.currentVersion)"), "G2b-2 检查成功且最新时置位 upToDate 而不是 idle")
+require(v.contains("已是最新版本"), "G2b-3 Views 里必须有已是最新的显示")
+require(v.contains("case .upToDate(let v)"), "G2b-4 UpdateStatusView 处理 upToDate 分支")
+if failures == 0 { print("G2B-OK") } else { exit(1) }
+GS2BSWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$GM2B/g2b" "$GM2B/main.swift" 2>"$GM2B/g2b.log" && "$GM2B/g2b" "$ROOT/Sources/Updater.swift" "$ROOT/Sources/Views.swift" >"$GM2B/g2b.out" 2>&1; then ok "G2b upToDate 可见反馈反 drift"; else bad "G2b $(grep '^FAIL' "$GM2B/g2b.out" 2>/dev/null | head -3; tail -2 "$GM2B/g2b.log")"; fi
 
 echo "== G3: relaunch 退出路径反 drift（编译真 Updater.swift，防 NSApp 崩溃回归）=="
 # 2026-10-22 端到端实测：Updater.relaunch() 里的 NSApp.terminate(nil) 在无 NSApplication
@@ -418,7 +446,7 @@ require(codeOnly.contains("else { exit(0) }"), "G35 exit fallback when NSApp is 
 require(codeOnly.contains("Self.terminateSelf()"), "G36 relaunch routes through terminateSelf")
 if failures == 0 { print("G3-OK") } else { exit(1) }
 GS3SWIFT
-if "$SWIFTC" -Onone -sdk "$SDK" -o "$GM3/g3" "$GM3/main.swift" 2>"$GM3/g3.log" && "$GM3/g3" "$ROOT/Sources/Updater.swift" >"$GM3/g3.out" 2>&1; then ok "G3 relaunch 退出路径"; else bad "G3 $(grep '^FAIL' "$GM3/g3.out" 2>/dev/null | head -3; tail -2 "$GM3/g3.log")"; fi
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$GM3/g3" "$GM3/main.swift" 2>"$GM3/g3.log" && "$GM3/g3" "$ROOT/Sources/Updater.swift" >"$GM3/g3.out" 2>&1; then ok "G3 relaunch 退出路径"; else bad "G3 $(grep '^FAIL' "$GM3/g3.out" 2>/dev/null | head -3; tail -2 "$GM3/g3.log")"; fi
 
 echo "== F: 发布产出端（release.sh 自检 + zip 布局 + bundle id）=="
 # F 覆盖自动更新链路的产出端。此前 A-E 只覆盖消费端（Updater 的版本比较 / 下载 / 安装），
@@ -489,11 +517,61 @@ echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
 # 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。
 # 本 stage 把那些行为固化成可执行断言，直接编译真实 Sources（不是逻辑副本）。
 # 安全背景：App 持有辅助功能权限，「更新」链路等价于远程代码执行入口。
+# 假包必须用真 Mach-O：一段文本当可执行文件时 codesign 压根签不上，
+# 被拒理由会变成「code object is not signed at all」——验的是「没签名被拒」，
+# 比「ad-hoc 被拒」弱得多，ad-hoc 放行逻辑写错时断言照样绿（HANDOFF §6.1c）。
+HADHOC="$WORK/adhoc.app"
+HTAMPER="$WORK/tampered.app"
+/bin/rm -rf "$HADHOC" "$HTAMPER"
+/bin/mkdir -p "$HADHOC/Contents/MacOS"
+/bin/echo 'int main(void){return 0;}' > "$WORK/macho.c"
+"$CC" -o "$HADHOC/Contents/MacOS/Smoose" "$WORK/macho.c" 2>/dev/null \
+  || /bin/cp /usr/bin/true "$HADHOC/Contents/MacOS/Smoose" 2>/dev/null \
+  || /bin/cp /Applications/Smoose.app/Contents/MacOS/Smoose "$HADHOC/Contents/MacOS/Smoose" 2>/dev/null \
+  || true
+# 注意：Mach-O 缺失时 bundle 级 codesign 照样报 Signature=adhoc（实测），
+# 所以前置自检必须下钻到 Mach-O 本身，否则 H20 仍是假绿。下面造不出来就交给 H23 报红。
+/bin/cp "$ROOT/Resources/Info.plist" "$HADHOC/Contents/Info.plist"
+/usr/bin/codesign --force --sign - --timestamp=none "$HADHOC" >/dev/null 2>&1
+# 篡改包：签完再改 Info.plist，模拟传输途中被换内容
+/bin/cp -R "$HADHOC" "$HTAMPER"
+/bin/echo '<!-- tampered by harness -->' >> "$HTAMPER/Contents/Info.plist"
 /bin/cat > "$WORK/main.swift" <<'HSWIFT'
 import Foundation
 import AppKit
 var failures = 0
 func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+// ---- 第二趟（SMOOSE_H_PASS=2）：只验 H25 teamMismatch，验完立刻退出 ----
+// 没有第二个 Team 的私钥，造不出「有 Team ID 但不是我们的」的包；但 expectedTeamIdentifier
+// 支持 Info.plist 覆盖，所以 harness 把这个二进制再包进一个 .app、塞 SmooseUpdateTeamID=FAKETEAM01，
+// 于是同一份官方包（真实 Team=6U2DQJ6Z2N）就会走到 teamMismatch 分支。
+// 必须在开头就 exit：后面 H1–H24 依赖默认期望值，这一趟跑了必然全红。
+if ProcessInfo.processInfo.environment["SMOOSE_H_PASS"] == "2" {
+    let real = ProcessInfo.processInfo.environment["SMOOSE_H_REAL"] ?? ""
+    func v2(_ path: String) -> UpdateInstallError? {
+        do { try Updater.verifySignature(of: URL(fileURLWithPath: path)); return nil }
+        catch let e as UpdateInstallError { return e }
+        catch { return .signatureInvalid("未知错误") }
+    }
+    // 前置自检确认「期望值确实被改掉了」。注入失败时这趟会静默退化成什么都不验，
+    // 所以这里必须卡住 —— 用「不等于默认值」表达，不硬编码具体假值。
+    require(Updater.expectedTeamIdentifier != "6U2DQJ6Z2N",
+            "H25PRE 第二趟没注入 SmooseUpdateTeamID（期望值仍是默认 6U2DQJ6Z2N，Bundle.main 读到的是别的 Info.plist？）")
+    if !real.isEmpty && FileManager.default.fileExists(atPath: real) {
+        if let e = v2(real) {
+            switch e {
+            case .teamMismatch: require(true, "H25 teamMismatch")
+            default: require(false, "H25 拒因是 \(e)，期望 teamMismatch")
+            }
+        } else {
+            require(false, "H25 期望 Team 被改后官方包竟然通过了")
+        }
+    } else {
+        print("SKIP H25 本机未安装 /Applications/Smoose.app")
+    }
+    if failures == 0 { print("H-OK") }
+    exit(failures == 0 ? 0 : 1)
+}
 // H1 强制 https：明文 http 可被链路上任何人改写响应 = RCE，只有回环例外
 require(Updater.validatedURL("https://example.com/f.json") != nil, "H1 https 放行")
 require(Updater.validatedURL("http://example.com/f.json") == nil, "H2 明文 http 远程拒绝")
@@ -522,23 +600,87 @@ require(murl("{\"version\":\"1.2.0\",\"digest\":\"ghi\"}")?.sha256 == "ghi", "H1
 require(murl("{\"version\":\"1.2.0\",\"sha256\":\"\"}")?.sha256 == nil, "H17 空串当未提供")
 require(murl("{\"version\":\"1.2.0\",\"sha256\":\"  abc  \"}")?.sha256 == "abc", "H18 首尾空白裁剪")
 require(murl("{\"version\":\"1.2.0\"}")?.sha256 == nil, "H19 无字段返回 nil")
-// H20 签名校验入口必须存在且拒绝 ad-hoc（真实跑一次 codesign）
-let adhoc = FileManager.default.temporaryDirectory.appendingPathComponent("SmooseAdhocTest.app")
-try? FileManager.default.removeItem(at: adhoc)
-try? FileManager.default.createDirectory(at: adhoc.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
-try? Data("#!/bin/sh\n".utf8).write(to: adhoc.appendingPathComponent("Contents/MacOS/Smoose"))
-try? Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>app.smoose.macos</string></dict></plist>".utf8).write(to: adhoc.appendingPathComponent("Contents/Info.plist"))
-let cs = Process(); cs.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-cs.arguments = ["--force", "--sign", "-", adhoc.path]
-try? cs.run(); cs.waitUntilExit()
-do { try Updater.verifySignature(of: adhoc); require(false, "H20 ad-hoc 重签必须被拒") }
-catch { require(true, "H20 ad-hoc 重签被拒") }
-try? FileManager.default.removeItem(at: adhoc)
+// H20-H22 签名校验：必须按「拒因」断言，不能只验「抛了错」——
+// 后者是个永远为真的弱命题，ad-hoc 放行逻辑写错时也照样绿。
+let env = ProcessInfo.processInfo.environment
+let pAdhoc = env["SMOOSE_H_ADHOC"] ?? ""
+let pTamper = env["SMOOSE_H_TAMPER"] ?? ""
+let pReal = env["SMOOSE_H_REAL"] ?? ""
+func verify(_ path: String) -> UpdateInstallError? {
+    guard !path.isEmpty else { return .appNotFound }
+    do {
+        try Updater.verifySignature(of: URL(fileURLWithPath: path))
+        return nil                       // 通过
+    } catch let e as UpdateInstallError { return e }
+    catch { return .signatureInvalid("未知错误") }
+}
+// 读 codesign 认的签名种类，用于 H23 的前置自检
+func signatureKind(_ path: String) -> String {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+    p.arguments = ["--display", "--verbose=2", path]
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+    try? p.run(); p.waitUntilExit()
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    for line in out.split(separator: "\n") {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("Signature=adhoc") { return "adhoc" }
+        if t.hasPrefix("Signature=") { return String(t.dropFirst("Signature=".count)) }
+    }
+    return "unsigned"
+}
+// H20 真 Mach-O 的 ad-hoc 重签必须被拒，且拒因必须是「没有可用开发者身份」
+if let e = verify(pAdhoc) {
+    switch e {
+    case .notSigned: require(true, "H20 ad-hoc 被拒")
+    default: require(false, "H20 拒因是 \(e) 而不是 ad-hoc 缺签名")
+    }
+} else {
+    require(false, "H20 ad-hoc 包竟然通过了签名校验")
+}
+// H21 签名后被改内容，必须被 codesign 本身拦下（而不是因为 ad-hoc 才被拒）
+if let e = verify(pTamper) {
+    switch e {
+    case .signatureInvalid: require(true, "H21 篡改被拒")
+    default: require(false, "H21 拒因是 \(e) 而不是签名无效")
+    }
+} else {
+    require(false, "H21 篡改包竟然通过了签名校验")
+}
+// H22 官方包（真 Team ID）必须通过 —— 防止把校验写成一律拒绝
+if !pReal.isEmpty && FileManager.default.fileExists(atPath: pReal) {
+    if let e = verify(pReal) { require(false, "H22 官方包应通过但被拒：\(e)") }
+    else { require(true, "H22 官方包通过") }
+} else {
+    print("SKIP H22 本机未安装 /Applications/Smoose.app")
+}
+// H23/H24 前置自检：H20 只有建立在「真 Mach-O + 真 ad-hoc 签名」之上才有意义。
+// 实测陷阱：Mach-O 缺失时 bundle 级 codesign --display 仍报 Signature=adhoc，
+// 所以只查 bundle 那一级会假绿；必须下钻到 Mach-O 文件本身。
+let macho = URL(fileURLWithPath: pAdhoc).appendingPathComponent("Contents/MacOS/Smoose")
+let head = (try? Data(contentsOf: macho)) ?? Data()
+var isMachO = false
+if head.count >= 4 {
+    let b0 = head[head.startIndex]
+    // 0xCF = Mach-O 64/32 位（FE ED FA CF 的小端首字节），0xCA = fat/universal（CA FE BA BE）
+    isMachO = (b0 == 0xCF || b0 == 0xCA)
+}
+require(isMachO, "H23 假包必须有真 Mach-O（当前首字节=\(head.first.map { String(format: "%02x", $0) } ?? "无")）")
+let kind = signatureKind(macho.path)
+require(kind == "adhoc", "H24 Mach-O 本身必须是 ad-hoc 已签名（实际=\(kind)）")
 if failures == 0 { print("H-OK") } else { exit(1) }
 HSWIFT
-if "$SWIFTC" -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -o "$WORK/h"     Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift     Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift     Sources/App.swift Sources/CursorZoom.swift "$WORK/main.swift" 2>"$WORK/h.log"; then
-  HFAILS="$("$WORK/h" 2>&1 | grep '^FAIL' || true)"
-  if [ -z "$HFAILS" ]; then ok "H 安全加固（https 强制 / Team ID / sha256 / 拒 ad-hoc）"; else bad "H $HFAILS"; fi
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -o "$WORK/h"     Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift     Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift     Sources/App.swift Sources/CursorZoom.swift "$WORK/main.swift" 2>"$WORK/h.log"; then
+  HFAILS="$(SMOOSE_H_ADHOC="$HADHOC" SMOOSE_H_TAMPER="$HTAMPER" \
+SMOOSE_H_REAL="/Applications/Smoose.app" "$WORK/h" 2>&1 | grep '^FAIL' || true)"
+  # 第二趟：把同一个二进制包进一个 .app，用 Info.plist 把「期望 Team ID」改成别的值，
+  # 这样官方包就该被判 teamMismatch（H25）。这是该分支唯一的自动载体。
+  HMA="$WORK/hm.app"
+  /bin/mkdir -p "$HMA/Contents/MacOS"
+  /bin/cp "$WORK/h" "$HMA/Contents/MacOS/h"
+  /usr/bin/printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>SmooseUpdateTeamID</key><string>FAKETEAM01</string></dict></plist>\n' > "$HMA/Contents/Info.plist"
+  HFAILS="$HFAILS$(SMOOSE_H_ADHOC="$HADHOC" SMOOSE_H_TAMPER="$HTAMPER" SMOOSE_H_PASS=2 \
+SMOOSE_H_REAL="/Applications/Smoose.app" "$HMA/Contents/MacOS/h" 2>&1 | grep '^FAIL' || true)"
+  if [ -z "$HFAILS" ]; then ok "H 安全加固（https 强制 / Team ID / sha256 / 按拒因断言 + Mach-O 前置）"; else bad "H $HFAILS"; fi
 else
   bad "H 编译失败$(tail -3 "$WORK/h.log")"
 fi

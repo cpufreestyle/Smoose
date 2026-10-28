@@ -90,7 +90,7 @@
 | H | 编译真实 `Sources/` 断言自动更新安全加固 | https 强制 / Team ID / sha256 / 拒 ad-hoc 回归 |
 
 用法：
-    ./run_tests.sh             # A B C D E F F2 G G2 G3 H（离线）
+    ./run_tests.sh             # A B C D E F F2 G G2 G2b G3 H（离线）
     ./run_tests.sh --device    # + D（需 Smoose 已跑且已授权）
 
 > ⚠️ **`--device` 的真实边界（2026-10-27 实测确认，勿再重复尝试）**：`--device` 段当前
@@ -408,7 +408,21 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 - D9 Asset 的 snake_case 键映射（2026-10-22 真实缺陷回归）：GitHub 发 `browser_download_url` / `content_type`，而 `Asset` 若没有 `CodingKeys`，合成解码按属性名 camelCase 查找，`name` 因为两种拼写相同仍能解出，于是「发现了新版但 `url=nil`」——用户看得到新版却永远下载不到安装包（真机「关于」页表现为「版本源没有提供安装包地址」）。D9 snake_case URL / D9b 仅 MIME / D9c 仅 `.zip` 后缀 / D9d 非归档 asset 忽略。
 - D9e `name` 兜底只在它本身是合法版本号时才生效：`{"name":"Smoose 1.5.0"}` 这种 GitHub release 标题 `SemVer` 解析不出来，必须判 `malformed` 而不是瞎猜一个版本号；`{"name":"1.5.0"}` 才走 `.available("1.5.0")`。（2026-10-22：这条断言原本写反了，与真源码行为相反，且一直被下面的 FIFO 假绿掩盖。）
 - **D11 当前 harness 状态（2026-10-27 第七轮）**：`./run_tests.sh` → `PASS=11 FAIL=0`（A 插值 / B profile / C ButtonAction / D 自动更新决策 / E 构建签名 / G 真实 UpdateModel 反 drift / G2 httpMessage 反 drift / G3 relaunch 退出路径 / F 发布产出端 / F2 release.sh 参数与 gh 解析 / H 安全加固）。上面各节的 `PASS=4` / `PASS=5` 是当日快照，不是当前值。
-- **H 安全加固断言（2026-10-27 新增，直接编译真实 `Sources/`）**：10-26 加的安全加固原先一条断言都没有（`run_tests.sh` 还停在 10-23），H 把它们固化成 20 项可执行断言——HTTPS 强制 11 项（H1-H11，含 IPv6 回环、`127.0.0.1.evil.com` / `localhost.evil.com` 前缀子域伪装）、默认 Team ID（H12）、sha256 与系统 `shasum` 逐字节对齐（H13）、manifest 三种 sha256 键名与空串/空白处理（H14-H19）、真实跑 `codesign` 确认 ad-hoc 重签被拒（H20）。
+- **D16 upToDate 必须有可见反馈（2026-10-29，用户实测反馈「检测更新没有成功」）**：检查成功且已是最新时，
+  `Updater.check` 必须把 `phase` 置为 `.upToDate(当前版本号)` 而不是 `.idle`，`UpdateStatusView` 必须显示
+  「已是最新版本 v<当前版本>」。此前 `.idle` 映射 `EmptyView`，用户点「检查更新」后除时间戳外零反馈，
+  把「没有新版」误读成「检查失败」。反 drift：harness G2b 文本守卫（Phase case、置位语句、Views 分支三处都要在）。
+  当前 `PASS=12 FAIL=0`（新增 G2b 后 11→12）。
+- **H 安全加固断言（2026-10-27 新增，直接编译真实 `Sources/`）**：10-26 加的安全加固原先一条断言都没有（`run_tests.sh` 还停在 10-23），H 把它们固化成可执行断言，现为 **25 项**——HTTPS 强制 11 项（H1-H11，含 IPv6 回环、`127.0.0.1.evil.com` / `localhost.evil.com` 前缀子域伪装）、默认 Team ID（H12）、sha256 与系统 `shasum` 逐字节对齐（H13）、manifest 三种 sha256 键名与空串/空白处理（H14-H19）、**H20/H21/H22 按拒因 case 断言**（ad-hoc 重签 → `notSigned`；签名后被篡改 → `signatureInvalid`；官方包 → 必须通过，防一律拒绝）、**H23/H24 前置自检**（Mach-O 首字节必须是 `0xCF`/`0xCA`；Mach-O 自身 `Signature=adhoc`）、**H25 teamMismatch**。
+  - ⚠️ **H20 单独拿出来仍是弱断言**：文本 Mach-O 与「Mach-O 缺失」两种假包都会返回 `notSigned`，与真 Mach-O 的 ad-hoc 包**拒因完全相同、无从区分**。H20 的效力依赖 H23/H24 守前置，**三者是一组，拆开删等于把假绿放回来**。反向验证：三种假包场景下 H23 全红、H24 红两种。（2026-10-27 第四轮实测，明细见 HANDOFF §6.1c。）
+  - 为此 `UpdateInstallError` 从 `private` 放开为 internal，并拆出 `notSigned` / `teamMismatch(actual:expected:)`，与 `signatureInvalid` 三者可辨。
+  - **H25 `teamMismatch` 的载体（2026-10-28）**：造不出「有 Team ID 但不是我们的」的包（本机只有一个 Team 的私钥，
+    `/Applications` 里也没有第三方签名 App）。解法是利用 `expectedTeamIdentifier` 支持 Info.plist 覆盖 ——
+    harness 把同一个测试二进制再包进一个 `.app`，塞 `SmooseUpdateTeamID=FAKETEAM01`，
+    于是那份**真实的官方包**（Team=6U2DQJ6Z2N）就会走到 `teamMismatch` 分支。
+    第二趟用 `SMOOSE_H_PASS=2` 触发，且必须在开头 `exit` —— 否则它会把依赖默认期望值的 H1–H24 也跑一遍而全红。
+    H25PRE 前置自检确认「期望值确实被改掉了」，注入失败即报红（否则这趟会静默退化成什么都不验）。
+    已做变异验证：把 `guard team == expected` 放宽后，H25 如预期 FAIL。
 - D12 `relaunch()` 退出路径（2026-10-22 第五轮，端到端实测崩溃）：`NSApp` 是 `NSApplication?` 的隐式解包全局，在没有 `NSApplication` 的上下文里是 nil，`NSApp.terminate(nil)` 直接 `Fatal error: Unexpectedly found nil`。契约：必须 `if let app = NSApp { app.terminate(nil) } else { exit(0) }`。真源码由 G3 反 drift 守住（已做变异验证：把 `Self.terminateSelf()` 改回 `NSApp.terminate(nil)`，G3 如预期 FAIL G32/G36）。
 - D14 默认版本源真实可用（2026-10-22 第六轮）：仓库已建为 public 并发布 Release，`GET https://api.github.com/repos/cpufreestyle/Smoose/releases/latest` 返回 200，真源码 `UpdateCheck.decide` 解出 `available(1.2.0)` + 下载地址，安装包 HTTP 200 可下载；整条「默认源 → 发现新版 → 下载 → 安装 → 重启」在真机跑通。
 - **D15 v1.2.1 发版链路逐段验证（2026-10-27 第八轮）**：`releases/latest` 200 → 真源码 `UpdateCheck.decide(current:"1.2.0")` 解出 `available(1.2.1)`、`decide(current:"1.2.1")` 为 `upToDate` → asset 下载 897507 字节、sha256 `2eb0885d…` 与 `release.sh` 产出端一致 → 解压后顶层即 `Smoose.app`、`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与 `expectedTeamIdentifier` 对齐、bundle id `app.smoose.macos` 匹配。GitHub 源不给 sha256，客户端跳过该校验（不阻断）。

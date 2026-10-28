@@ -66,13 +66,24 @@
 
 ```bash
 cd Smoose
-export SMOOSE_SIGN_ID="Apple Development: 你的名字 (TEAMID)"   # 见下方说明
+export SMOOSE_SIGN_ID="Apple Development: 你的名字 (TEAMID)"   # 可选，见下方说明
 ./build.sh            # 产出 build/Smoose.app
-cp -R build/Smoose.app /Applications/
+
+# ⚠️ 不要用 cp -R：目标已存在时会把新包拷进旧包里面，变成
+#    /Applications/Smoose.app/Smoose.app，签名校验会报 unsealed contents
+/usr/bin/ditto --noqtn build/Smoose.app /Applications/Smoose.app.new
+/usr/bin/find /Applications/Smoose.app -mindepth 1 -delete
+/usr/bin/ditto --noqtn /Applications/Smoose.app.new /Applications/Smoose.app
+/usr/bin/codesign --verify --deep --strict /Applications/Smoose.app
 ```
 
-**签名身份走环境变量 `SMOOSE_SIGN_ID`**。不设置会回落 ad-hoc 并打印警告 —— ad-hoc 每次 cdhash 都变，
-**辅助功能授权会在每次重新编译后失效**。用真实证书签名时 DR 绑定证书，重新编译不掉授权。
+**签名身份三级回退**：① 环境变量 `SMOOSE_SIGN_ID`（换机器 / 换账号时用）→ ② 自动探测钥匙串里的
+Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
+落到第 ③ 档时每次 cdhash 都变，**辅助功能授权会在每次重新编译后失效**，且会被发布自检拒绝。
+
+**在 CI / 受限沙箱里构建**：Swift 宏展开需要 `swift-plugin-server`，而它自己要套 `sandbox-exec`，
+在已经禁止嵌套沙箱的环境里会报 `SwiftUIMacros.StateMacro ... malformed response`。
+这种环境用 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh`（`run_tests.sh` 同理）。普通终端不用设。
 
 源码 11 个文件：`main.swift`（纯 AppKit 入口）、`App.swift`（AppDelegate / 状态栏 / 窗口自愈）、
 `Views.swift`（界面）、`Model.swift`（配置模型）、`ScrollAxis.swift`（插值引擎，纯逻辑）、
@@ -82,15 +93,27 @@ cp -R build/Smoose.app /Applications/
 ### 一键验证（harness）
 
 ```bash
-./run_tests.sh             # A B C D E F F2 G G2 G3 H 十一段，离线
-./run_tests.sh --device    # + 真机断言
+./run_tests.sh        # A B C D E G G2 G3 F F2 H 十一段，离线
 ```
 
-十一段分别是：A 插值与距离守恒、B 每应用命中、C 按键动作枚举、D 自动更新决策、
-E 构建签名、F 发布产出端、F2 `release.sh` 参数与 `gh` 路径解析、
-G 真实 `UpdateModel` 反 drift、G2 `httpMessage` 反 drift、G3 `relaunch` 退出路径反 drift、
-H 更新链路安全加固（HTTPS 强制 / sha256 校验 / TeamIdentifier 身份比对 / codesign 拒绝 ad-hoc 包）。
+| 段 | 验什么 |
+| --- | --- |
+| A | 插值与距离守恒 |
+| B | 每应用命中 |
+| C | 按键动作枚举 |
+| D | 自动更新决策 |
+| E | 构建签名 |
+| G / G2 / G2b / G3 | 反 drift：`UpdateModel` 真源码 / `httpMessage` / upToDate 可见反馈 / `relaunch` 退出路径 |
+| F / F2 | 发布产出端 zip 自检 / `release.sh` 参数与 `gh` 路径解析 |
+| H | 更新链路安全加固：HTTPS 强制 / sha256 / TeamIdentifier 比对 / 按拒因断言 + Mach-O 级前置自检（25 条断言，编译真源码） |
+
+（上表是**实际执行顺序**；按字母念的规范顺序是 A B C D E F F2 G G2 G2b G3 H。）
+
 改引擎 / 持久化 / 自动更新代码后必须跑一遍，全部 PASS 才算完成。契约与断言清单见 [SPEC.md](SPEC.md)。
+
+> **没有 `--device` 选项**。指针速度改写这条链路在当前环境下没有可靠的真机断言载体
+> （CLI 装 tap 拿不到辅助功能信任、产物 strip 过符号、dylib 注入起不来），
+> SPEC §7 里早期列过它但从未实现 —— 只能人工验证：开「指针速度倍率」→ 移动鼠标 → 手感是否随倍率变化。
 
 ⚠️ 两条写 harness 时踩过的坑：
 
