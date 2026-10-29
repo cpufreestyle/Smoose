@@ -49,6 +49,10 @@ final class ScrollEngine {
 
     private var config = StoredState()
     private var activeAppID: String?
+    /// profile(for:) 的帧循环缓存：字典查找 + masterEnabled / enabled 链每帧都要跑，
+    /// 120Hz 下每秒几百次。这个结果只在 apply()（配置变更）和 setActiveApp()（App 切换）
+    /// 两个低频事件里才会变，在两处失效重建即可。
+    private var cachedProfile: ScrollProfile?
 
     private var trustTimer: DispatchSourceTimer?
     // triggerOnMouseUp 模式下，已吞掉 DOWN 的按钮集合；
@@ -60,6 +64,7 @@ final class ScrollEngine {
     func apply(_ state: StoredState) {
         lock.lock(); defer { lock.unlock() }
         config = state
+        cachedProfile = config.profile(for: activeAppID)
         // 配置热更新后重置亚像素累积，避免倍率切换瞬间出现一次跳变
         pointerRemX = 0
         pointerRemY = 0
@@ -71,6 +76,7 @@ final class ScrollEngine {
     func setActiveApp(_ id: String?) {
         lock.lock(); defer { lock.unlock() }
         activeAppID = id
+        cachedProfile = config.profile(for: activeAppID)
     }
 
     func install(initial state: StoredState) {
@@ -270,7 +276,7 @@ final class ScrollEngine {
         let rawX = Self.raw(of: event, fixed: F.fixedX, point: F.pointX, line: F.lineX, continuous: continuous)
 
         lock.lock()
-        guard let profile = config.profile(for: activeAppID) else {
+        guard let profile = cachedProfile else {
             lock.unlock()
             publishMonitor(rawY: rawY, continuous: continuous, handled: false)
             return Unmanaged.passUnretained(event)
@@ -415,7 +421,7 @@ final class ScrollEngine {
 
     private func frame(at hostTime: Double) {
         lock.lock()
-        guard let profile = config.profile(for: activeAppID) else {
+        guard let profile = cachedProfile else {
             // 不拦截时保持状态干净
             axisY.reset()
             axisX.reset()

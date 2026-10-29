@@ -422,6 +422,9 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
      续传；成功后清除。下载超时 `timeoutIntervalForRequest = 120`（此前 60s 在慢网络下截断出 732KB 残包的教训）。
   3. **`pointerRemX/Y` 数据竞争收尾**：`handlePointerMove` 的 rem 累积全程持锁（早退分支先 unlock），
      §7 挂了很久的「轻微竞争」已修。G2c-8 断言「unlock 之后不得再访问 rem」，变异验证可抓回归。
+  4. **`profile(for:)` 帧循环缓存**：滚动/帧循环热路径读 `cachedProfile`（120Hz 下每秒几百次字典查找 → 0），
+     缓存只在 `apply()`（配置变更）与 `setActiveApp()`（App 切换）两个低频失效点重建。
+     G2c-10 断言重建点恰好两处、G2c-11 断言热路径不得直接查字典。
   当前 `PASS=13 FAIL=0`（新增 G2c 后 12→13）。
 - **H 安全加固断言（2026-10-27 新增，直接编译真实 `Sources/`）**：10-26 加的安全加固原先一条断言都没有（`run_tests.sh` 还停在 10-23），H 把它们固化成可执行断言，现为 **25 项**——HTTPS 强制 11 项（H1-H11，含 IPv6 回环、`127.0.0.1.evil.com` / `localhost.evil.com` 前缀子域伪装）、默认 Team ID（H12）、sha256 与系统 `shasum` 逐字节对齐（H13）、manifest 三种 sha256 键名与空串/空白处理（H14-H19）、**H20/H21/H22 按拒因 case 断言**（ad-hoc 重签 → `notSigned`；签名后被篡改 → `signatureInvalid`；官方包 → 必须通过，防一律拒绝）、**H23/H24 前置自检**（Mach-O 首字节必须是 `0xCF`/`0xCA`；Mach-O 自身 `Signature=adhoc`）、**H25 teamMismatch**。
   - ⚠️ **H20 单独拿出来仍是弱断言**：文本 Mach-O 与「Mach-O 缺失」两种假包都会返回 `notSigned`，与真 Mach-O 的 ad-hoc 包**拒因完全相同、无从区分**。H20 的效力依赖 H23/H24 守前置，**三者是一组，拆开删等于把假绿放回来**。反向验证：三种假包场景下 H23 全红、H24 红两种。（2026-10-27 第四轮实测，明细见 HANDOFF §6.1c。）

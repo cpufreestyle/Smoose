@@ -36,8 +36,9 @@
 > ① 检查更新 ETag 条件请求（304 复用缓存体；**必须配 `reloadIgnoringLocalCacheData`**，默认策略拿不到 304，实测踩过），
 > 缓解 GitHub 60 次/h/IP 限流；② 下载断点续传 + 超时 120s（慢网截断 732KB 残包的教训）；③ 合成滚轮事件显式打
 > `timestamp`（ns since startup，部分消费端动量计算依赖）；④ `handlePointerMove` rem 累积数据竞争收尾（§7 老账，
-> 实际是无锁段在 rem 累积处，`apply()` 本来就有锁）。
-> harness 新增 G2c（8 项断言，含变异验证），`PASS=13 FAIL=0`。ETag 304 与静默检查均真机实测通过。见 SPEC D17。
+> 实际是无锁段在 rem 累积处，`apply()` 本来就有锁）；⑤ `profile(for:)` 帧循环缓存（热路径读 `cachedProfile`，
+> 只在 apply / setActiveApp 两处重建）；⑥ `release.sh` 把安装包 sha256 写进 Release notes（手动下载可自行核对）。
+> harness 新增 G2c（11 项断言，含变异验证），`PASS=13 FAIL=0`。ETag 304 与静默检查均真机实测通过。见 SPEC D17。
 >
 > **2026-10-27 第二轮**：把含全部修复的新构建重新部署到 `/Applications`、清理历史遗留的嵌套 `Smoose.app`（见 §6.1）、
 > 补 `.gitignore`、实测确认 `--device` 真机断言在本环境没有可靠载体（§6.1b + SPEC §7 警告框）、

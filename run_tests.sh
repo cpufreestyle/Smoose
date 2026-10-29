@@ -449,6 +449,12 @@ require(u.contains("downloadTask(withResumeData:"), "G2c-5 下载必须支持断
 require(u.contains("NSURLSessionDownloadTaskResumeData"), "G2c-6 中断时必须保存 resumeData")
 // 超时必须给足（弱网 60s+ 截断的教训）
 require(u.contains("timeoutIntervalForRequest = 120"), "G2c-7 下载 request 超时必须 120s")
+// profile 帧循环缓存：热路径必须读缓存而不是每帧查字典，
+// 缓存必须在 apply() 与 setActiveApp() 两个失效点重建
+require(e.contains("private var cachedProfile: ScrollProfile?"), "G2c-9 profile 帧循环缓存必须存在")
+require(e.split(separator: "\n").filter { $0.contains("cachedProfile = config.profile(for: activeAppID)") }.count == 2,
+        "G2c-10 缓存必须在 apply() 与 setActiveApp() 恰好两处重建")
+require(!e.contains("profile = config.profile(for:"), "G2c-11 帧循环热路径不得直接查字典（应读 cachedProfile）")
 // 锁竞争修复：handlePointerMove 内 unlock 之后不得再访问 rem
 // （早退分支先 unlock 是正常的；要防的是「unlock 后还在读写 rem」的原竞争形态）
 let moveRange = e.range(of: "private func handlePointerMove")

@@ -135,7 +135,10 @@ if [ "$UPLOAD" = "1" ]; then
   TAG="v$VERSION"
   /bin/echo "→ 发 Release $TAG 到 $REPO"
   if ! "$GH" release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-    "$GH" release create "$TAG" --repo "$REPO" --title "$NAME $VERSION" --generate-notes
+    # sha256 写进 Release notes：GitHub API 的 asset 元数据里没有校验和字段，
+    # 自动更新走 JSON 版本源能拿到，手动下载的用户只能靠这里自行核对
+    "$GH" release create "$TAG" --repo "$REPO" --title "$NAME $VERSION" \
+      --generate-notes --notes "安装包 sha256: \`$SHA\`"
   fi
   "$GH" release upload "$TAG" "$ZIP" --repo "$REPO" --clobber
   /bin/echo "✓ https://github.com/$REPO/releases/tag/$TAG"
