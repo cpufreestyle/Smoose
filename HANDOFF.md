@@ -32,6 +32,13 @@
 > harness 新增 G2b 文本守卫（3 处断言），`PASS=12 FAIL=0`。见 SPEC D16。
 > 已重新构建并部署 `/Applications/Smoose.app`（授权保留），真机静默检查实测成功。
 >
+> **2026-10-29 第六轮（优化轮）**：四项优化一次落地 ——
+> ① 检查更新 ETag 条件请求（304 复用缓存体；**必须配 `reloadIgnoringLocalCacheData`**，默认策略拿不到 304，实测踩过），
+> 缓解 GitHub 60 次/h/IP 限流；② 下载断点续传 + 超时 120s（慢网截断 732KB 残包的教训）；③ 合成滚轮事件显式打
+> `timestamp`（ns since startup，部分消费端动量计算依赖）；④ `handlePointerMove` rem 累积数据竞争收尾（§7 老账，
+> 实际是无锁段在 rem 累积处，`apply()` 本来就有锁）。
+> harness 新增 G2c（8 项断言，含变异验证），`PASS=13 FAIL=0`。ETag 304 与静默检查均真机实测通过。见 SPEC D17。
+>
 > **2026-10-27 第二轮**：把含全部修复的新构建重新部署到 `/Applications`、清理历史遗留的嵌套 `Smoose.app`（见 §6.1）、
 > 补 `.gitignore`、实测确认 `--device` 真机断言在本环境没有可靠载体（§6.1b + SPEC §7 警告框）、
 > README/SPEC/HANDOFF 三处文档同步（阶段表改十一段、源码行数对齐实测、修正失实验证声明）。
@@ -54,7 +61,7 @@
 | 源码 | `Sources/*.swift` 11 个文件，共 **3311 行**（Views 917 / Updater 639 / ScrollEngine 484 / App 409 / Model 305 / UpdateModel 198 / PointerController 174 / ScrollAxis 70 / Actions 54 / CursorZoom 48 / main 13） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
-| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G3/H 十二段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
+| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/H 十三段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
 | 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0） |
 
@@ -438,7 +445,9 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   - **更新替换后若签名身份变化，TCC 辅助功能授权会失效，`Updater` 尚未提示用户**（2026-10-26 审核标为 P2，未修）。当前同一账号签名不会触发，换账号打包会触发。
 - **启发式风险**：触控板判定靠 `IsContinuous/ScrollPhase/MomentumPhase`，个别第三方设备可能误判。
 - **距离倍率基准**：绝对基准依赖各 App 自身的行距换算，这正是 Mos 提供每应用配置的原因，本作同样支持。
-- **数据竞争（轻微）**：`pointerRemX/Y` 在 tap 线程读写、`apply()` 主线程重置，无锁。后果仅可能是一次亚像素跳变，未修。
+- **数据竞争（已修，2026-10-29）**：`pointerRemX/Y` 在 tap 线程读写、`apply()` 主线程重置。原记录称「无锁、未修」，
+  实际核对：`apply()` 有锁，无锁的是 `handlePointerMove` 的 rem 累积段（`lock.unlock()` 提前了）。
+  现已全程持锁，G2c-8 断言守住（unlock 后不得再访问 rem），变异验证可抓回归。见 SPEC D17。
 - **版本比较**：`UpdateCheck` 只看 SemVer，不校验降级；`minSystem` 解析失败时放行（不阻塞检查）。
 - ~~`teamMismatch` 无自动载体~~ **2026-10-28 已解决（H25）**：用「改期望值」而不是「造假包」拿到载体 ——
   把测试二进制包进带 `SmooseUpdateTeamID` 的 `.app`，官方包就会撞上 teamMismatch。`verifySignature` 的

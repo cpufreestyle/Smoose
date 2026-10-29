@@ -204,12 +204,11 @@ final class ScrollEngine {
         // 而 mouseMoved 在 120Hz 屏上每秒能来几百次 —— 每次都查会直接把指针延迟顶上去
         // （2026-10-26 审核发现的 P1）。activeAppID 由 AppDelegate 监听
         // didActivateApplicationNotification 维护，tap 里只读不查。
-        let front = activeAppID
-        lock.unlock()
-
         // Dock / MenuBar 等 UI 对 hover 判定很敏感：改写后的 delta 会丢失
         // 原始相对运动语义，导致图标不再放大。因此这些窗口在前台时不改写。
+        let front = activeAppID
         if front == "com.apple.dock" || front == "com.apple.finder" {
+            lock.unlock()
             return Unmanaged.passUnretained(event)
         }
 
@@ -218,9 +217,13 @@ final class ScrollEngine {
         // 否则会造成 Dock 图标粘住等 UI 异常。
         let needRewrite = speedManaged && abs(factor - 1.0) > 0.0001
         guard needRewrite else {
+            lock.unlock()
             return Unmanaged.passUnretained(event)
         }
 
+        // rem 累积全程持锁：apply() 会在主线程锁内重置 rem，
+        // 这里若先解锁再读写就是数据竞争（HANDOFF §7 挂了很久的「轻微」问题，
+        // 实际是原 228-233 行整段无锁）。
         let inX = Double(event.getIntegerValueField(F.dX))
         let inY = Double(event.getIntegerValueField(F.dY))
         let scale = speedManaged ? max(0.05, factor) : 1.0
@@ -231,6 +234,7 @@ final class ScrollEngine {
         let outY = pointerRemY.rounded(.towardZero)
         pointerRemX -= outX
         pointerRemY -= outY
+        lock.unlock()
         event.setIntegerValueField(F.dX, value: Int64(outX))
         event.setIntegerValueField(F.dY, value: Int64(outY))
         // 原地改写后放行，而不是吞掉再合成新事件。
@@ -439,6 +443,9 @@ final class ScrollEngine {
         guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return }
         event.setIntegerValueField(F.userData, value: Self.magic)
         event.setIntegerValueField(F.cont, value: 0)
+        // 显式打时间戳（ns since startup）：合成事件不带 timestamp 时，
+        // 消费端（游戏 / 高帧率 App 的动量计算）拿到的是 0 或不可信值，平滑会抖
+        event.timestamp = CGEventTimestamp(CACurrentMediaTime() * 1_000_000_000)
 
         // 一秒内投递超过 ~40000px 视为回环失控，清空状态
         if secondStart == 0 { secondStart = CACurrentMediaTime() }

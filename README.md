@@ -103,11 +103,11 @@ Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
 | C | 按键动作枚举 |
 | D | 自动更新决策 |
 | E | 构建签名 |
-| G / G2 / G2b / G3 | 反 drift：`UpdateModel` 真源码 / `httpMessage` / upToDate 可见反馈 / `relaunch` 退出路径 |
+| G / G2 / G2b / G2c / G3 | 反 drift：`UpdateModel` 真源码 / `httpMessage` / upToDate 可见反馈 / 限流与弱网韧性（ETag / 续传 / 锁）/ `relaunch` 退出路径 |
 | F / F2 | 发布产出端 zip 自检 / `release.sh` 参数与 `gh` 路径解析 |
 | H | 更新链路安全加固：HTTPS 强制 / sha256 / TeamIdentifier 比对 / 按拒因断言 + Mach-O 级前置自检（25 条断言，编译真源码） |
 
-（上表是**实际执行顺序**；按字母念的规范顺序是 A B C D E F F2 G G2 G2b G3 H。）
+（上表是**实际执行顺序**；按字母念的规范顺序是 A B C D E F F2 G G2 G2b G2c G3 H。）
 
 改引擎 / 持久化 / 自动更新代码后必须跑一遍，全部 PASS 才算完成。契约与断言清单见 [SPEC.md](SPEC.md)。
 

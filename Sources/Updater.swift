@@ -179,6 +179,14 @@ final class Updater: ObservableObject {
         if interactive { phase = .checking }
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        // ETag 条件请求：GitHub API 对未认证请求限流 60 次/小时/IP，
+        // 带 If-None-Match 命中 304 时不计入限流也不消耗流量。
+        if let etag = UserDefaults.standard.string(forKey: kEtagKey), !etag.isEmpty {
+            req.setValue(etag, forHTTPHeaderField: "If-None-Match")
+            // 实测（2026-10-29）：默认 cachePolicy 下 URL 缓存会把 304 在内部展开成 200，
+            // 永远到不了分支。必须 ignore local cache 才能拿到真 304。
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+        }
         let session = URLSession(configuration: .ephemeral)
         task?.cancel()
         checkSession?.finishTasksAndInvalidate()
@@ -201,40 +209,33 @@ final class Updater: ObservableObject {
                     if interactive { self.phase = .failed(Self.httpMessage(code: http.statusCode, url: self.feedURLString)) }
                     return
                 }
+                // 304 = 版本源没变，上次的响应仍然有效。缓存的决策直接复用，
+                // 否则 ETag 命中反而会让用户看到「版本源没有内容」。
+                if let http = resp as? HTTPURLResponse, http.statusCode == 304 {
+                    if let cached = UserDefaults.standard.data(forKey: kLastGoodBodyKey),
+                       !cached.isEmpty {
+                        self.applyDecision(data: cached, interactive: interactive)
+                    } else {
+                        // 没有缓存体（例如 ETag 是上一版写下的）就不走条件请求收益了，
+                        // 记一次成功避免用户看到失败话术
+                        self.recordCheck(failed: false)
+                        if interactive { self.phase = .upToDate(Self.currentVersion) }
+                    }
+                    return
+                }
+                if let http = resp as? HTTPURLResponse {
+                    let newEtag = http.value(forHTTPHeaderField: "ETag")
+                    if let newEtag, !newEtag.isEmpty {
+                        UserDefaults.standard.set(newEtag, forKey: kEtagKey)
+                    }
+                }
                 guard let data else {
                     self.recordCheck(failed: true)
                     if interactive { self.phase = .failed("版本源没有内容") }
                     return
                 }
-                let os = ProcessInfo.processInfo.operatingSystemVersion
-                let osString = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
-                switch UpdateCheck.decide(current: Self.currentVersion, osVersion: osString, data: data) {
-                case .upToDate:
-                    self.recordCheck(failed: false)
-                    self.available = nil
-                    if interactive { self.phase = .upToDate(Self.currentVersion) }
-                case .available(let m):
-                    self.recordCheck(failed: false)
-                    if self.skippedVersions.contains(m.version) {
-                        self.available = nil
-                        // 手动检查时要说明白「跳过了」，不是查无结果
-                        if interactive { self.phase = .skipped(m.version) }
-                    } else {
-                        self.available = m
-                        // 静默检查也必须把 phase 推到 updateFound：菜单栏横幅和「关于」页
-                        // 都靠这个状态显示。只在 interactive 时置位的话，用户不主动打开
-                        // 「关于」页就永远不知道有新版，自动更新退化成手动更新（2026-10-22）。
-                        self.phase = .updateFound(m.version)
-                    }
-                case .systemTooOld(let m, let need):
-                    self.recordCheck(failed: false)
-                    self.available = nil
-                    if interactive { self.phase = .failed("\(m.version) 需要 macOS \(need) 或更高") }
-                case .malformed(let why):
-                    self.recordCheck(failed: true)
-                    self.available = nil
-                    if interactive { self.phase = .failed(why) }
-                }
+                UserDefaults.standard.set(data, forKey: kLastGoodBodyKey)
+                self.applyDecision(data: data, interactive: interactive)
             }
         }
         task?.resume()
@@ -245,6 +246,40 @@ final class Updater: ObservableObject {
     private func recordCheck(failed: Bool) {
         UserDefaults.standard.set(Date(), forKey: kLastCheckKey)
         UserDefaults.standard.set(failed, forKey: kLastFailedKey)
+    }
+
+    /// 版本源字节 → 决策 → phase。200 与 304（复用缓存体）两条路径共用，
+    /// 保证「发现新版 / 跳过 / 系统太老 / 坏包」在各路径下行为一致。
+    private func applyDecision(data: Data, interactive: Bool) {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let osString = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        switch UpdateCheck.decide(current: Self.currentVersion, osVersion: osString, data: data) {
+        case .upToDate:
+            recordCheck(failed: false)
+            available = nil
+            if interactive { phase = .upToDate(Self.currentVersion) }
+        case .available(let m):
+            recordCheck(failed: false)
+            if skippedVersions.contains(m.version) {
+                available = nil
+                // 手动检查时要说明白「跳过了」，不是查无结果
+                if interactive { phase = .skipped(m.version) }
+            } else {
+                available = m
+                // 静默检查也必须把 phase 推到 updateFound：菜单栏横幅和「关于」页
+                // 都靠这个状态显示。只在 interactive 时置位的话，用户不主动打开
+                // 「关于」页就永远不知道有新版，自动更新退化成手动更新（2026-10-22）。
+                phase = .updateFound(m.version)
+            }
+        case .systemTooOld(let m, let need):
+            recordCheck(failed: false)
+            available = nil
+            if interactive { phase = .failed("\(m.version) 需要 macOS \(need) 或更高") }
+        case .malformed(let why):
+            recordCheck(failed: true)
+            available = nil
+            if interactive { phase = .failed(why) }
+        }
     }
 
     func cancel() {
@@ -309,19 +344,41 @@ final class Updater: ObservableObject {
             })
         progressDelegate = delegate
         downloadSession?.finishTasksAndInvalidate()
-        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        // 慢网络下 GitHub asset 下载实测会超 60s（897KB 拿了 60s+ 才到），
+        // request timeout 必须给足，否则卡在 stall 上直接断（上一轮 732KB 截断包的根因）。
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 120
+        cfg.timeoutIntervalForResource = 60 * 10
+        let session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
         downloadSession = session
         downloadTask?.cancel()
-        downloadTask = session.downloadTask(with: url)
+        // 断点续传：上次下载中断留下的 resumeData 还有效就从断点继续，
+        // 失效（服务器不支持 / 文件变了）系统会自己退回全量下载。
+        if let saved = UserDefaults.standard.data(forKey: kResumeDataKey),
+           let task = session.downloadTask(withResumeData: saved) as URLSessionDownloadTask? {
+            UserDefaults.standard.removeObject(forKey: kResumeDataKey)
+            downloadTask = task
+        } else {
+            downloadTask = session.downloadTask(with: url)
+        }
         downloadTask?.resume()
     }
 
     private func handleDownloaded(_ location: URL?, response: URLResponse?, error: Error?,
                                   url: URL, manifest: UpdateManifest) {
         if let error {
+            // (NSURLErrorCancelled) 时 resumeData 里带着已下载的字节，
+            // 存下来下次续传；没有 resumeData 的失败（DNS / 404）不值得存。
+            if let rd = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                UserDefaults.standard.set(rd, forKey: kResumeDataKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: kResumeDataKey)
+            }
             phase = .failed("下载失败：\(error.localizedDescription)")
             return
         }
+        // 成功下载后清掉续传缓存，避免下次误用旧断点
+        UserDefaults.standard.removeObject(forKey: kResumeDataKey)
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             phase = .failed("下载失败：服务器返回 HTTP \(http.statusCode)")
             return
@@ -651,3 +708,6 @@ private let kFeedKey = "smoose.update.feed"
 private let kLastCheckKey = "smoose.update.lastCheck"
 private let kLastFailedKey = "smoose.update.lastCheckFailed"
 private let kSkipKey = "smoose.update.skipped"
+private let kEtagKey = "smoose.update.etag"
+private let kLastGoodBodyKey = "smoose.update.lastGoodBody"
+private let kResumeDataKey = "smoose.update.resumeData"

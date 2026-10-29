@@ -425,6 +425,56 @@ if failures == 0 { print("G2B-OK") } else { exit(1) }
 GS2BSWIFT
 if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$GM2B/g2b" "$GM2B/main.swift" 2>"$GM2B/g2b.log" && "$GM2B/g2b" "$ROOT/Sources/Updater.swift" "$ROOT/Sources/Views.swift" >"$GM2B/g2b.out" 2>&1; then ok "G2b upToDate 可见反馈反 drift"; else bad "G2b $(grep '^FAIL' "$GM2B/g2b.out" 2>/dev/null | head -3; tail -2 "$GM2B/g2b.log")"; fi
 
+echo "== G2c: 限流与弱网韧性反 drift（2026-10-29 优化：ETag 条件请求 / 断点续传 / 锁竞争）=="
+# 三项优化都必须在真源码里：304 复用缓存体、resumeData 续传、rem 累积持锁。
+GM2C="$(mktemp -d)"
+/bin/cat > "$GM2C/main.swift" <<'GS2CSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+let updater = FileManager.default.contents(atPath: CommandLine.arguments[1]).map { String(decoding: $0, as: UTF8.self) } ?? ""
+let engine = FileManager.default.contents(atPath: CommandLine.arguments[2]).map { String(decoding: $0, as: UTF8.self) } ?? ""
+func codeOnly(_ s: String) -> String {
+    s.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+}
+let u = codeOnly(updater)
+let e = codeOnly(engine)
+// ETag 条件请求三件套：读 etag、发 If-None-Match、304 复用缓存体
+require(u.contains("If-None-Match"), "G2c-1 检查请求必须带 If-None-Match")
+require(u.contains(".reloadIgnoringLocalCacheData"), "G2c-2 条件请求必须 ignore local cache（默认策略拿不到 304，实测）")
+require(u.contains("statusCode == 304"), "G2c-3 必须处理 304")
+require(u.contains("kLastGoodBodyKey"), "G2c-4 必须缓存上次响应体供 304 复用")
+// 断点续传：存 resumeData、用 resumeData 建任务、成功后清缓存
+require(u.contains("downloadTask(withResumeData:"), "G2c-5 下载必须支持断点续传")
+require(u.contains("NSURLSessionDownloadTaskResumeData"), "G2c-6 中断时必须保存 resumeData")
+// 超时必须给足（弱网 60s+ 截断的教训）
+require(u.contains("timeoutIntervalForRequest = 120"), "G2c-7 下载 request 超时必须 120s")
+// 锁竞争修复：handlePointerMove 内 unlock 之后不得再访问 rem
+// （早退分支先 unlock 是正常的；要防的是「unlock 后还在读写 rem」的原竞争形态）
+let moveRange = e.range(of: "private func handlePointerMove")
+if let start = moveRange?.lowerBound {
+    let body = String(e[start...])
+    let end = body.range(of: "private func isSynthetic")?.lowerBound ?? body.endIndex
+    let fn = String(body[..<end])
+    let remWrite = fn.range(of: "pointerRemY -= outY")?.lowerBound
+    if let rw = remWrite {
+        let after = String(fn[rw...])
+        let firstUnlockAfter = after.range(of: "lock.unlock()")?.lowerBound
+        let remAccessAfterUnlock = firstUnlockAfter.flatMap { fu in
+            after[fu...].range(of: "pointerRem")
+        }
+        require(firstUnlockAfter != nil && remAccessAfterUnlock == nil,
+                "G2c-8 unlock 之后不得再访问 rem（数据竞争回归）")
+    } else {
+        require(false, "G2c-8 找不到 rem 写入（函数结构变了，人工核对）")
+    }
+} else {
+    require(false, "G2c-8 找不到 handlePointerMove")
+}
+if failures == 0 { print("G2C-OK") } else { exit(1) }
+GS2CSWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$GM2C/g2c" "$GM2C/main.swift" 2>"$GM2C/g2c.log" && "$GM2C/g2c" "$ROOT/Sources/Updater.swift" "$ROOT/Sources/ScrollEngine.swift" >"$GM2C/g2c.out" 2>&1; then ok "G2c 限流与弱网韧性反 drift"; else bad "G2c $(grep '^FAIL' "$GM2C/g2c.out" 2>/dev/null | head -3; tail -2 "$GM2C/g2c.log")"; fi
+
 echo "== G3: relaunch 退出路径反 drift（编译真 Updater.swift，防 NSApp 崩溃回归）=="
 # 2026-10-22 端到端实测：Updater.relaunch() 里的 NSApp.terminate(nil) 在无 NSApplication
 # 的上下文（探针 / 单元测试 / CLI）里直接 Fatal error: Unexpectedly found nil。
