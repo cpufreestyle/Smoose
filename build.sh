@@ -7,6 +7,10 @@ BUILD="$ROOT/build"
 APP="$BUILD/$NAME.app"
 SDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
 SWIFTC="$(/usr/bin/xcrun --sdk macosx --find swiftc)"
+# 受限环境（CI / agent 沙箱）里 Swift 宏插件服务器起不来（它自己要套 sandbox，
+# 外层已禁嵌套 sandbox_apply），表现为 SwiftUIMacros... malformed response。
+# 这种环境里用 SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh。普通终端留空即可。
+: "${SMOOSE_SWIFT_EXTRA:=}"
 
 rm -rf "$BUILD"
 mkdir -p "$APP/Contents/MacOS"
@@ -14,7 +18,7 @@ mkdir -p "$APP/Contents/Resources"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 /bin/echo "→ compiling"
-"$SWIFTC" -O \
+"$SWIFTC" $SMOOSE_SWIFT_EXTRA -O \
   -target arm64-apple-macos14.0 \
   -sdk "$SDK" \
   -o "$APP/Contents/MacOS/$NAME" \

@@ -93,7 +93,7 @@ Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
 ### 一键验证（harness）
 
 ```bash
-./run_tests.sh        # A B C D E G G2 G3 F F2 H 十一段，离线
+./run_tests.sh        # A B C D E G G2 G2b G2c G3 F F2 H 十三段，离线
 ```
 
 | 段 | 验什么 |

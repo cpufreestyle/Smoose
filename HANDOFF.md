@@ -5,9 +5,12 @@
 > 原生 Swift，零第三方依赖。
 >
 > 本文档面向接手维护的开发者，记录架构、能力、关键坑、构建方式与未决项。
-> **最后更新：2026-10-28 第五轮**（**攻破「受限环境编译不了 Swift 宏」这一长期限制**：
-> `swiftc -disable-sandbox` → 全量编译 / 完整 harness 都能跑 → 重新构建并部署到 `/Applications`，
-> 这是第一个真正包含 10-27 第四轮改动的产品）。
+> **最后更新：2026-10-31 第七轮（发版轮）**（发 v1.2.2 把第六轮优化真正送到用户手上：
+> 版本抬号 → `release.sh --github` 重新签名打包并发 Release → 逐段复核发版链路（SPEC D18）→
+> ditto 部署到 `/Applications`（旧包可逆隔离）→ 完整 harness 重跑 `PASS=13 FAIL=0` →
+> 同步修掉 SPEC D11 的「PASS=11 却自称当前值」文档漂移）。
+> 上一轮 **2026-10-28 第五轮** 攻破的是「受限环境编译不了 Swift 宏」这条长期限制：
+> `swiftc -disable-sandbox` → 全量编译 / 完整 harness 都能跑。
 >
 > **2026-10-27 第四轮**（10-26 只读审核 + P0/P1/P2 修复 → 10-27 补 H 段 harness、
 > 修 IPv6 回环与签名回退、重新部署并发 v1.2.1 → 10-27 第三轮逐条复核文档与实况 →
@@ -40,6 +43,20 @@
 > 只在 apply / setActiveApp 两处重建）；⑥ `release.sh` 把安装包 sha256 写进 Release notes（手动下载可自行核对）。
 > harness 新增 G2c（11 项断言，含变异验证），`PASS=13 FAIL=0`。ETag 304 与静默检查均真机实测通过。见 SPEC D17。
 >
+> **2026-10-31 第七轮（发版轮）**：第六轮的优化此前只存在于源码与本地构建里，用户的自动更新还只会拿到 v1.2.1。
+> 本轮把版本抬到 `1.2.2`（`Resources/Info.plist` 的 `CFBundleShortVersionString` + `CFBundleVersion` 3→4），
+> 跑 `./scripts/release.sh --github --repo cpufreestyle/Smoose` 重新签名打包并发布 Release `v1.2.2`
+> （**必须重跑 release.sh 重建签名，不能用 plutil 改已签名包的版本号** —— `_CodeSignature` 会不符被拒）。
+> 逐段复核发版链路（SPEC D18）：asset sha256 `81565ba6…` 与产出端一致、真源码 `decide` 对 current 1.2.1 解出
+> `available(1.2.2)`、下载包签名有效且 Team ID 对齐。部署到 `/Applications` 用 ditto 配方 + 可逆隔离旧包
+> （`mv Smoose.app Smoose-1.2.1-predeploy.app`，不用 `rm`），运行版本 1.2.2、二进制 sha256 `e3b0126a…`、
+> 辅助功能授权 `auth_value=2` 保留、启动无崩溃。完整 harness 重跑 `PASS=13 FAIL=0`。
+> 顺带修掉一处文档漂移：SPEC D11 自称「当前 harness 状态」却停在 `PASS=11`，与 D16/D17 的 13 矛盾，已改为
+> 「段数演进快照，当前值以 D17 为准」。
+> ⚠️ **本轮踩到的环境坑（记给接手人）**：用 `nohup … & disown` 起的后台 harness 会在工具调用结束时被会话回收杀掉，
+> 且 `build.sh` 是 `rm -rf build` 再编译 —— 被杀时 `build/Smoose.app` 会停在只有 `AppIcon.icns` 的半成品状态。
+> 跑完整 harness / release 要用常驻 PTY 会话（前台 `tee`），别用 nohup 后台；被打断后先重跑 `./build.sh` 复原产物。
+>
 > **2026-10-27 第二轮**：把含全部修复的新构建重新部署到 `/Applications`、清理历史遗留的嵌套 `Smoose.app`（见 §6.1）、
 > 补 `.gitignore`、实测确认 `--device` 真机断言在本环境没有可靠载体（§6.1b + SPEC §7 警告框）、
 > README/SPEC/HANDOFF 三处文档同步（阶段表改十一段、源码行数对齐实测、修正失实验证声明）。
@@ -58,13 +75,13 @@
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.2.1**（**2026-10-28 第五轮重新部署**）。Mach-O 二进制 sha256 `87e4e24fe0b259b3…a07db`（10-28 实测；此前记的 `030c309d…` 已作废，再早的 `a26c1d37…` 同样作废）。**这是第一个真正包含 10-27 第四轮 H20/Updater 改动的产物** —— 10-27 那次部署早于这些改动。含 10-26 安全加固与 10-27/10-28 修复；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。滚动接管、指针速度 0.5x–2x、静默更新检查链路、版本源 404 话术均实测过（更早轮次）。部署用 ditto 配方，见 §6.1a |
-| 源码 | `Sources/*.swift` 11 个文件，共 **3311 行**（Views 917 / Updater 639 / ScrollEngine 484 / App 409 / Model 305 / UpdateModel 198 / PointerController 174 / ScrollAxis 70 / Actions 54 / CursorZoom 48 / main 13） |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.2.2**（**2026-10-31 第七轮重新部署**）。Mach-O 二进制 sha256 `e3b0126a1c1950118056a598df21824018373231ff5647fc1a0fa0a5782b96f7`（10-31 实测；此前 1.2.1 记的 `87e4e24fe0b259b3…a07db` 已作废，再早的 `030c309d…` / `a26c1d37…` 同样作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化（ETag / 断点续传 / 事件时间戳 / rem 锁竞争收尾 / profile 帧循环缓存 / Release notes sha256）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。旧包隔离在 `/Applications/Smoose-1.2.1-predeploy.app`（可回滚）。滚动接管、指针速度 0.5x–2x、静默更新检查链路、版本源 404 话术均实测过（更早轮次）；**自动更新的端到端安装（下载→替换→relaunch）仍未真跑，见 §7 未决项**。部署用 ditto 配方，见 §6.1a |
+| 源码 | `Sources/*.swift` 11 个文件，共 **3401 行**（Views 920 / Updater 713 / ScrollEngine 497 / App 409 / Model 305 / UpdateModel 198 / PointerController 174 / ScrollAxis 70 / Actions 54 / CursorZoom 48 / main 13；2026-10-31 `wc -l` 实测） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
 | 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/H 十三段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
-| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0） |
+| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2，latest = v1.2.2） |
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
@@ -120,10 +137,11 @@ App 持有**辅助功能权限**（能监听并合成全局输入），所以「
 - 此前的记录链：10-26 写「离线 harness 12 项断言全部通过」，但当时 `run_tests.sh` 还停在 10-23，
   那些安全行为一条断言都没有 —— 文档声称的验证并不存在（10-27 第二轮修正）。
 - 现状：**H stage 的 25 条断言（H1–H25）全部通过**；2026-10-28 起可直接在受限环境跑完整 harness
-  （`SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → `PASS=11 FAIL=0`），验的是真源码不是逻辑副本。
+  （`SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **`PASS=13 FAIL=0`**，2026-10-31 实测），
+  验的是真源码不是逻辑副本。10-28 那趟是 11 段，此后 G2b（10-29）与 G2c（10-29 优化轮）各加一段。
   此前（10-27）只能用退化手段：本沙箱编译不了含 SwiftUI 宏的 Views/App/CursorZoom，改用不含宏的
   7 文件子集 + H 段真实 `main.swift` 编译执行。该手段现在只用于「想快一点拿到反馈」。
-- **计数器别混**：H 段自己有 25 条断言；`PASS=11 FAIL=0` 是整个 harness 的 **11 个 stage** 全部通过。
+- **计数器别混**：H 段自己有 25 条断言；`PASS=13 FAIL=0` 是整个 harness 的 **13 个 stage** 全部通过。
   两个数不是一个量。文档里曾写成「20 项断言 … PASS=11」，现已分开表述。
 - H20 的假绿风险第四轮已修：不再只验「抛了错」，而是按拒因 case 断言，并加 H23/H24 前置自检守 Mach-O
   确实是真货。**H20/H23/H24 是一组，拆开删就等于把假绿放回来**。详见 §6.1c。
@@ -398,7 +416,7 @@ cd Smoose
 
   ```bash
   SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh
-  SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh   # 2026-10-28 实测 PASS=11 FAIL=0
+  SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh   # 2026-10-31 实测 PASS=13 FAIL=0（十三段）
   ```
 
   在此之前只能用两个退化手段，现在**只在想要更快反馈时才用**：
@@ -450,6 +468,15 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   实际核对：`apply()` 有锁，无锁的是 `handlePointerMove` 的 rem 累积段（`lock.unlock()` 提前了）。
   现已全程持锁，G2c-8 断言守住（unlock 后不得再访问 rem），变异验证可抓回归。见 SPEC D17。
 - **版本比较**：`UpdateCheck` 只看 SemVer，不校验降级；`minSystem` 解析失败时放行（不阻塞检查）。
+- **自动更新的端到端安装未真跑（2026-10-31 仍未验证）**：v1.2.2 发版只做了链路**逐段**验证
+  （版本源 200 → `decide` 解出 available → asset sha256 一致 → zip 顶层布局 → 签名与 Team ID 对齐 → 部署后运行正常），
+  没有真跑一次「用户端点『下载并安装』→ 替换 `/Applications/Smoose.app` → relaunch 成新版本」。
+  上一次真跑通端到端是 D13（2026-10-22，1.1.0→1.2.0，本地 HTTP 版本源）。
+  要验证得让 App 自己检测到 v1.2.2 并点安装 —— 但本机已是 1.2.2，检测结果是 `upToDate`，
+  所以需要先把 `/Applications` 换成一个低版本包（隔离副本 `Smoose-1.2.1-predeploy.app` 正好可用）再触发检查。
+- **用户提过「Dock 继续」但症状不明（2026-10-31）**：已实测确认 Dock hover 放大、光标移开复位、无粘住都正常
+  （10-19 的修复在 1.2.x 仍有效），当时配置 `pointerSpeedManaged=False`、`cursorZoomEnabled=False`。
+  若用户再说 Dock 问题，先问清是哪种现象（放大失效 / 粘滞 / 图标不显示），别再盲改。
 - ~~`teamMismatch` 无自动载体~~ **2026-10-28 已解决（H25）**：用「改期望值」而不是「造假包」拿到载体 ——
   把测试二进制包进带 `SmooseUpdateTeamID` 的 `.app`，官方包就会撞上 teamMismatch。`verifySignature` 的
   三条拒因分支（ad-hoc → `notSigned`、篡改 → `signatureInvalid`、他人 Team → `teamMismatch`）现在都有断言。
@@ -458,7 +485,7 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
 
 ## 8. 接手 Checklist
 
-- [x] `./build.sh` 编译通过并部署 `/Applications`（2026-10-07 首通；2026-10-22 部署 1.2.0；**2026-10-27 重新部署含全部修复的新构建**，见 §6.1a）
+- [x] `./build.sh` 编译通过并部署 `/Applications`（2026-10-07 首通；2026-10-22 部署 1.2.0；2026-10-27 部署含全部修复的新构建；**2026-10-31 部署 1.2.2**，见 §6.1a）
 - [x] 实机验证：滚动接管（指数曲线 / 距离守恒）、指针速度 0.5×–2×、签名授权保持
 - [x] `Probe/` 与 `Tests/` 保留（作为开发探针与离线回归）
 - [x] 自动更新全链路：版本源拉取 → SemVer 比较 → 增量进度下载 → 解压 → 校验 → 替换 → relaunch，真机跑通（v1.1.0 → v1.2.0）
