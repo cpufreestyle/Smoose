@@ -88,6 +88,7 @@
 | G3 | 文本守卫 `Sources/Updater.swift` 的 `relaunch` 退出路径 | `NSApp` 隐式解包崩溃回归 |
 | F2 | `release.sh` 参数解析 + `gh` 路径解析 | `--repo owner/name` / Homebrew gh 路径回归 |
 | H | 编译真实 `Sources/` 断言自动更新安全加固 | https 强制 / Team ID / sha256 / 拒 ad-hoc 回归 |
+| H26–H28 | `Updater.replaceApp(at:target:)` 回滚契约 | 替换成功 / 验签失败回滚 / 新包缺失回滚 |
 
 用法：
     ./run_tests.sh             # A B C D E F F2 G G2 G2b G2c G3 H（离线）
@@ -446,7 +447,18 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
   ① `SettingsWindow` 根视图 `.frame(width:560,height:520)` —— 固定尺寸变成 `NSHostingView` 的锁死约束，窗口边缘拖不动；
   ② tab 内容里散布的 `.frame(width:380)` 等固定宽度 —— 窗口能拖大但内容钉在 380px，右侧大片空白。
   契约：**窗口根用 `minWidth/minHeight` 下限约束；内容块用 `maxWidth:` 上限弹性宽度（关于页 420、版本源输入框 340、菜单栏面板 minWidth 330），
-  不得再用固定 `width:` 钉死可拉伸区域**。反 drift 由 code review 把关（文本守卫对 SwiftUI 修饰符误报率高，未入 harness）。
+-  不得再用固定 `width:` 钉死可拉伸区域**。反 drift 由 code review 把关（文本守卫对 SwiftUI 修饰符误报率高，未入 harness）。
+- **D20 自动更新端到端闭环（2026-10-31，补齐 §7 长期未决项）**：此前只做过逐段验证，
+  「下载 → 替换 /Applications/Smoose.app → relaunch」这条最危险的路径从未真跑。本次实测：
+  `/Applications/Smoose.app` 先降到 1.2.1 隔离副本（`Smoose-1.2.1-predeploy.app`，签名有效、Team ID 一致），
+  再以无界面驱动直接调用真实 `Updater.check(interactive:)` + `downloadAndInstall()` 走默认 GitHub 版本源：
+  `updateFound(1.3.0)` → `downloading 0→100%` → `installing` → `readyToRelaunch(1.3.0)`。
+  落盘复核：`CFBundleShortVersionString=1.3.0`、`codesign --verify --deep --strict` 通过、
+  `TeamIdentifier=6U2DQJ6Z2N`、Mach-O sha256 `d1056d36…43d5` 与 v1.3.0 Release notes 声明一致。
+  **契约**：`replaceApp` 注入 `target` 参数以便离线断言；失败时必须把旧版搬回原位（不留「App 被删了却装不上」）。
+  **断言**：H26 正常替换换成新版、H27 新包签名无效必须回滚成旧版、H28 新包缺失也必须回滚。
+  H26 的新包必须用**真证书签名**的包（用 `/Applications/Smoose.app` 充当），否则会先被 `verifySignature`
+  拒掉而测不到替换路径 —— 这是本轮踩到的第一个假绿诱因。
 - D13 端到端闭环（2026-10-22 第五轮，真机实测）：本地 HTTP 版本源 + 真实签名的 1.2.0 安装包，跑通「检查 → 增量进度下载（0→100%，13 帧）→ 解压 → bundle id 校验 → 替换 /Applications/Smoose.app → relaunch → 新进程以 1.2.0 运行」。版本比较回归：当前 1.2.0/1.2.1/1.3.0 对 feed 1.2.0 均 `upToDate`，1.1.0 → `available`。
 - D10 版本源 HTTP 错误话术（2026-10-22 新增）：默认版本源指向一个还没创建的 GitHub 仓库，404 是必然结果，只显示「HTTP 404」用户完全不知道该干什么。断言默认 404 文案含「还没有发布记录」并指向「关于」页、自建源 404 不含默认文案、403 / 401 / 500 各自可操作。真实源码由 G2 反 drift 守住。
 - F 发布产出端（2026-10-22 补）：A-E 只覆盖消费端（Updater 的版本比较 / 下载 / 安装），产出端此前完全靠人工点一遍。F 跑 `./scripts/release.sh` 后**独立复核**三条 Updater 硬要求 —— zip 顶层必须是 `Smoose.app`、`CFBundleIdentifier` 必须是 `app.smoose.macos`、解出来的 App 签名必须有效。刻意不信 release.sh 自己的自检：自检被删掉或改松时，F 仍然会发现。已做变异验证：把 `Resources/Info.plist` 的 bundle id 改成 `app.smoose.WRONG`，F 如预期 FAIL（`bundle id 是 app.smoose.WRONG 而不是 app.smoose.macos`），改回后恢复 PASS。

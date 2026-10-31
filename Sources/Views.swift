@@ -47,6 +47,7 @@ struct MenuBarPanel: View {
                               help: "越大尾巴越长，越小越干脆")
                 LabeledSlider(title: "最小步长", value: $prefs.global.minStep, range: 0...30, unit: "px",
                               help: "低于此值的微动也会被放大，避免轻推无反应")
+                ScrollCurvePreview(profile: prefs.global, compact: true)
             }
             .disabled(!prefs.masterEnabled)
 
@@ -54,6 +55,11 @@ struct MenuBarPanel: View {
             Section("轴") {
                 Toggle("垂直平滑", isOn: $prefs.global.smoothVertical)
                 Toggle("水平平滑", isOn: $prefs.global.smoothHorizontal)
+            }
+            if prefs.global.boostModifiers != 0 {
+                Text("按住加速键可滚得更远（\(String(format: "%.1f", prefs.global.boostFactor))×）")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
             }
             Divider()
             // 有新版本时在菜单栏面板顶部横幅提示。
@@ -201,6 +207,7 @@ struct GeneralTab: View {
                               help: "插值时间常数，越大越顺滑")
                 LabeledSlider(title: "最小步长", value: $prefs.global.minStep, range: 0...30, unit: "px",
                               help: "量化下限")
+                ScrollCurvePreview(profile: prefs.global)
             }
             Section("轴向与方向") {
                 HStack {
@@ -219,6 +226,19 @@ struct GeneralTab: View {
                                  set: { prefs.global.bypassModifiers = $0 })
                 )
                 Text("做精细操作（PR / 时间线 / 表格）时，按住 ⌥ 之类即可临时回到原生逐格滚动。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Section("按住加速") {
+                ModifierBypassRow(
+                    title: "按住以下键时滚得更远",
+                    mask: Binding(get: { prefs.global.boostModifiers },
+                                 set: { prefs.global.boostModifiers = $0 })
+                )
+                LabeledSlider(title: "加速倍数", value: $prefs.global.boostFactor, range: 1.2...6, unit: "×",
+                              help: "按住上面的键时，距离倍率再乘这个数；松开立刻恢复")
+                Text("滚长文档 / 长网页时按住加速键，平时仍保持温和手感。"
+                     + "与「按住透传」配同一个键时，以透传为准。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -1003,5 +1023,79 @@ struct LabeledSlider: View {
                 Text(help).font(.system(size: 10)).foregroundStyle(.tertiary)
             }
         }
+    }
+}
+
+// MARK: - 滚动曲线预览
+
+/// 把当前「顺滑度」的插值曲线画出来，让滑条位置和实际手感对得上。
+/// 没有这个预览时，用户只能来回拖滑条试手感，不知道自己调到哪一档。
+struct ScrollCurvePreview: View {
+    let profile: ScrollProfile
+    /// 菜单栏面板宽度只有 320，去掉底部说明文字，只留图和数字
+    var compact: Bool = false
+
+    /// 采样窗口固定 0.5s：短于此看不出尾巴差别，长于此所有档位都贴顶。
+    private static let duration: Double = 0.5
+
+    private var samples: [(t: Double, progress: Double)] {
+        ScrollCurve.samples(tau: profile.tau, duration: Self.duration)
+    }
+
+    private var settling: Double {
+        ScrollCurve.settlingTime(tau: profile.tau)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("曲线预览").font(.system(size: 11, weight: .medium))
+                Spacer()
+                Text(verbatim: String(format: "95%% 到位 %.0f ms", settling * 1000))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Canvas { ctx, size in
+                let pts = samples
+                guard pts.count > 1 else { return }
+                // 网格：0.5 与 1.0 两条虚线，给曲线一个参照
+                for frac in [0.5, 1.0] {
+                    var grid = Path()
+                    let y = size.height * (1 - frac)
+                    grid.move(to: CGPoint(x: 0, y: y))
+                    grid.addLine(to: CGPoint(x: size.width, y: y))
+                    ctx.stroke(grid, with: .color(.secondary.opacity(0.18)),
+                               style: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
+                }
+                var path = Path()
+                for (i, p) in pts.enumerated() {
+                    let x = size.width * (p.t / Self.duration)
+                    let y = size.height * (1 - p.progress)
+                    if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                    else { path.addLine(to: CGPoint(x: x, y: y)) }
+                }
+                ctx.stroke(path, with: .color(.accentColor),
+                           style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                // 末端点：标出「一格滚完」的最终位置
+                if let last = pts.last {
+                    let end = CGPoint(x: size.width, y: size.height * (1 - last.progress))
+                    ctx.fill(Path(ellipseIn: CGRect(x: end.x - 2.5, y: end.y - 2.5,
+                                                    width: 5, height: 5)),
+                             with: .color(.accentColor))
+                }
+            }
+            .frame(height: 54)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.secondary.opacity(0.06))
+            )
+            if !compact {
+                Text("横轴 0–500ms，纵向是这一格滚轮走完的进度；尾巴越长越顺滑，越陡越干脆。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("滚动曲线预览，95% 到位约 \(Int(settling * 1000)) 毫秒"))
     }
 }

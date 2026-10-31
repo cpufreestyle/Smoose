@@ -568,6 +568,83 @@ RSNC="$(/usr/bin/grep -v '^[[:space:]]*#' scripts/release.sh)"
 /bin/echo "$RSNC" | /usr/bin/grep -q '需要一个值' || F2FAILS="$F2FAILS F2l"
 if [ -z "$F2FAILS" ]; then ok "F2 release.sh 参数/gh 解析"; else bad "F2$F2FAILS"; fi
 
+echo "== S: 滚轮加速与曲线预览（2026-10-31，编译真实 ScrollAxis.swift）=="
+# 编译真源码而不是副本，否则 harness 绿而 App 坏（G 段已经吃过一次这个亏）。
+# swiftc 只允许在名为 main.swift 的文件里写顶层语句，所以单独开一个目录。
+/bin/mkdir -p "$WORK/sdir"
+/bin/cat > "$WORK/sdir/main.swift" <<'SSWIFT'
+import Foundation
+import CoreGraphics
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+
+let cmd = CGEventFlags.maskCommand.rawValue
+let opt = CGEventFlags.maskAlternate.rawValue
+let shift = CGEventFlags.maskShift.rawValue
+
+// S1 未配置加速键 → 恒为 1.0，绝不改变手感（默认关闭是安全默认值）
+require(ScrollBoost.scale(enabled: false, modifiers: 0, factor: 3, eventFlags: cmd) == 1.0,
+        "S1 关闭时不变速")
+// S2 配了键但没按住 → 1.0
+require(ScrollBoost.scale(enabled: true, modifiers: cmd, factor: 3, eventFlags: 0) == 1.0,
+        "S2 没按住不变速")
+// S3 配了键也按住了 → 应用倍率
+require(ScrollBoost.scale(enabled: true, modifiers: cmd, factor: 3, eventFlags: cmd) == 3.0,
+        "S3 按住时应用倍率")
+// S4 按住的是别的键 → 不触发（不能「按任意键都加速」）
+require(ScrollBoost.scale(enabled: true, modifiers: cmd, factor: 3, eventFlags: opt) == 1.0,
+        "S4 按错键不触发")
+// S5 组合键：配置 ⌘+⌥，两个都按住才算命中；只按 ⌘ 不算
+require(ScrollBoost.scale(enabled: true, modifiers: cmd | opt, factor: 2, eventFlags: cmd | opt) == 2.0,
+        "S5a 组合键全按下命中")
+require(ScrollBoost.scale(enabled: true, modifiers: cmd | opt, factor: 2, eventFlags: cmd) == 1.0,
+        "S5b 组合键只按一半不命中")
+// S6 事件里还带别的修饰键（例如 ⌘+⇧）不影响判定 —— 只要求配置的位都在
+require(ScrollBoost.scale(enabled: true, modifiers: cmd, factor: 2, eventFlags: cmd | shift) == 2.0,
+        "S6 多余修饰键不影响")
+// S7 倍率下限夹到 1：小于 1 是减速，不是本功能的语义
+require(ScrollBoost.scale(enabled: true, modifiers: cmd, factor: 0.3, eventFlags: cmd) == 1.0,
+        "S7 小于 1 夹到 1")
+// S8 倍率上限：手滑写成 100 也不能真放大 100 倍
+require(ScrollBoost.scale(enabled: true, modifiers: cmd, factor: 100, eventFlags: cmd) == ScrollBoost.maxScale,
+        "S8 超过上限被夹住")
+
+// S9-S12 曲线预览：形状必须与引擎同一个指数公式，否则预览会骗人
+let s = ScrollCurve.samples(tau: 0.05, duration: 0.5, samples: 11)
+require(s.count == 11, "S9 采样点数")
+require(abs(s[0].progress) < 1e-9, "S10 起点为 0")
+require(s.last!.progress > 0.99, "S11 终点接近 1")
+var monotonic = true
+for i in 1..<s.count where s[i].progress < s[i-1].progress { monotonic = false }
+require(monotonic, "S12 曲线单调不减")
+// S13 与引擎公式逐点一致：1 - exp(-t/tau)
+let tau = 0.08
+var formulaOK = true
+for p in ScrollCurve.samples(tau: tau, duration: 0.4, samples: 9) {
+    if abs(p.progress - (1 - exp(-p.t / tau))) > 1e-9 { formulaOK = false }
+}
+require(formulaOK, "S13 与引擎公式一致")
+// S14 顺滑度越大，尾巴越长（95% 到位时间单调递增）
+func settle(_ sm: Double) -> Double {
+    ScrollCurve.settlingTime(tau: 0.006 + sm * sm * 0.26)
+}
+require(settle(0.9) > settle(0.5) && settle(0.5) > settle(0.1), "S14 顺滑度单调改变尾巴长度")
+// S15 极端参数不退化成 NaN / 0
+require(settle(0.0).isFinite && settle(0.0) > 0, "S15 tau 下界仍为正有限值")
+require(ScrollCurve.samples(tau: 0, duration: 0.5, samples: 5).allSatisfy { $0.progress.isFinite },
+        "S16 tau=0 不产生 NaN")
+require(ScrollCurve.samples(tau: 0.05, duration: 0, samples: 5).isEmpty, "S17 零窗口采样为空")
+
+if failures == 0 { print("S-OK") } else { exit(1) }
+SSWIFT
+# CGEventFlags 在 CoreGraphics 里；ScrollAxis.swift 只 import Foundation，所以补一个 CG 头
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -framework CoreGraphics -o "$WORK/s" Sources/ScrollAxis.swift "$WORK/sdir/main.swift" 2>"$WORK/s.log"; then
+  if "$WORK/s" >/dev/null; then ok "S 滚轮加速与曲线（15 项）"; else bad "S $("$WORK/s" 2>&1 | grep '^FAIL' | tr '\n' ' ')"; fi
+else
+  bad "S 编译失败$(tail -3 "$WORK/s.log")"
+fi
+
 echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
 # 2026-10-26 加的安全加固此前一条 harness 都没有（run_tests.sh 还停在 10-23），
 # 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。
@@ -723,6 +800,70 @@ if head.count >= 4 {
 require(isMachO, "H23 假包必须有真 Mach-O（当前首字节=\(head.first.map { String(format: "%02x", $0) } ?? "无")）")
 let kind = signatureKind(macho.path)
 require(kind == "adhoc", "H24 Mach-O 本身必须是 ad-hoc 已签名（实际=\(kind)）")
+
+// H26-H28 replaceApp 的回滚契约（2026-10-31 端到端实测后补）。
+// 这段代码会移动 /Applications/Smoose.app，出错时若不回滚就是「用户的 App 没了」。
+// 用临时目录注入 target 来造两个失败场景，避免动真身。
+let fm2 = FileManager.default
+let sandbox = fm2.temporaryDirectory.appendingPathComponent("smoose_r_\(UUID().uuidString)")
+try? fm2.createDirectory(at: sandbox, withIntermediateDirectories: true)
+func makeApp(_ dir: URL, _ ver: String) -> URL {
+    let app = dir.appendingPathComponent("Smoose.app")
+    try? fm2.createDirectory(at: app.appendingPathComponent("Contents/MacOS"),
+                             withIntermediateDirectories: true)
+    let plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>"
+        + "<key>CFBundleShortVersionString</key><string>\(ver)</string></dict></plist>"
+    try? plist.write(to: app.appendingPathComponent("Contents/Info.plist"),
+                     atomically: true, encoding: .utf8)
+    return app
+}
+func verOf(_ app: URL) -> String? {
+    let p = app.appendingPathComponent("Contents/Info.plist")
+    guard let d = try? Data(contentsOf: p),
+          let o = try? PropertyListSerialization.propertyList(from: d, format: nil),
+          let dict = o as? [String: Any] else { return nil }
+    return dict["CFBundleShortVersionString"] as? String
+}
+// H26 正常替换：旧版被换成新版。
+// 新包必须是「真证书签过」的包，否则会先被 verifySignature 拒掉，测不到替换路径。
+// 本机装了 /Applications/Smoose.app 就拿它当新版本；没装则跳过这一条。
+do {
+    let src = URL(fileURLWithPath: pReal)
+    if !pReal.isEmpty, fm2.fileExists(atPath: src.path) {
+        let live = makeApp(sandbox.appendingPathComponent("normal"), "1.2.1")
+        let fresh = sandbox.appendingPathComponent("normal_new/Smoose.app")
+        try? fm2.createDirectory(at: fresh.deletingLastPathComponent(),
+                                 withIntermediateDirectories: true)
+        try? fm2.copyItem(at: src, to: fresh)
+        var err: String?
+        do { try Updater.replaceApp(at: fresh, target: live) } catch { err = "\(error)" }
+        require(err == nil, "H26 替换不应报错（\(err ?? "")）")
+        let want = verOf(src)
+        require(verOf(live) == want, "H26 替换后应为新版 \(want ?? "?")（实际=\(verOf(live) ?? "无")）")
+    } else {
+        print("SKIP H26 本机未安装 /Applications/Smoose.app")
+    }
+}
+// H27 新包签名无效：必须回滚成旧版，且不能留下半截 target。
+// 这里喂一个 ad-hoc 包（verifySignature 会以 notSigned 拒绝）。
+do {
+    let live = makeApp(sandbox.appendingPathComponent("rollback"), "1.2.1")
+    var err: String?
+    do { try Updater.replaceApp(at: URL(fileURLWithPath: pAdhoc), target: live) } catch { err = "\(error)" }
+    require(err != nil, "H27 签名无效的新包必须报错")
+    require(fm2.fileExists(atPath: live.path), "H27 回滚后旧版必须还在")
+    require(verOf(live) == "1.2.1", "H27 回滚后版本应为旧版（实际=\(verOf(live) ?? "被删了")）")
+}
+// H28 拷贝阶段就失败（新包不存在）：同样必须把旧版搬回来
+do {
+    let live = makeApp(sandbox.appendingPathComponent("missing"), "1.2.1")
+    let ghost = sandbox.appendingPathComponent("missing_new/Smoose.app")
+    var err: String?
+    do { try Updater.replaceApp(at: ghost, target: live) } catch { err = "\(error)" }
+    require(err != nil, "H28 新包不存在必须报错")
+    require(verOf(live) == "1.2.1", "H28 旧版必须回滚（实际=\(verOf(live) ?? "被删了")）")
+}
+try? fm2.removeItem(at: sandbox)
 if failures == 0 { print("H-OK") } else { exit(1) }
 HSWIFT
 if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/h" \

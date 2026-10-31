@@ -20,6 +20,9 @@ struct ScrollProfile: Codable, Equatable {
     var minStep: Double = 6.0
     /// 按住这些修饰键时跳过接管、原样透传（CGEventFlags 位掩码）
     var bypassModifiers: UInt64 = 0
+    /// 按住加速键时把距离倍率再乘上 boostFactor（Mos 的 scroll boost）
+    var boostModifiers: UInt64 = 0
+    var boostFactor: Double = 2.0
 
     /// 指数逼近时间常数（秒）。越大尾巴越长越顺滑
     var tau: Double { 0.006 + smoothness * smoothness * 0.26 }
@@ -39,6 +42,8 @@ struct ScrollProfile: Codable, Equatable {
         smoothness = try c.decodeIfPresent(Double.self, forKey: .smoothness) ?? 0.45
         minStep = try c.decodeIfPresent(Double.self, forKey: .minStep) ?? 6.0
         bypassModifiers = try c.decodeIfPresent(UInt64.self, forKey: .bypassModifiers) ?? 0
+        boostModifiers = try c.decodeIfPresent(UInt64.self, forKey: .boostModifiers) ?? 0
+        boostFactor = try c.decodeIfPresent(Double.self, forKey: .boostFactor) ?? 2.0
     }
 
     static let presets: [String: ScrollProfile] = {

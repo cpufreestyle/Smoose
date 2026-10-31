@@ -302,8 +302,15 @@ final class ScrollEngine {
 
         // 滚轮行数（只对滚轮鼠标的离散格生效；触控板/Magic Mouse 连续滚动不受影响）
         let lineScale = continuous ? 1.0 : max(0.05, profile.wheelLines)
-        let scaledY = rawY * lineScale
-        let scaledX = rawX * lineScale
+        // 按住加速键时临时放大距离（Mos 的 scroll boost）。
+        // 只在按下那一刻的原始事件上应用，作用在累加进插值器之前，
+        // 因此松键后已经排队的尾巴仍按原曲线走完，不会出现「松开突然变慢」的跳变。
+        let boost = ScrollBoost.scale(enabled: profile.boostModifiers != 0,
+                                      modifiers: profile.boostModifiers,
+                                      factor: profile.boostFactor,
+                                      eventFlags: event.flags.rawValue)
+        let scaledY = rawY * lineScale * boost
+        let scaledX = rawX * lineScale * boost
 
         if profile.smoothVertical {
             axisY.push(prepare(scaledY, profile: profile, reverse: profile.reverseVertical, continuous: continuous))

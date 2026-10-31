@@ -5,10 +5,11 @@
 > 原生 Swift，零第三方依赖。
 >
 > 本文档面向接手维护的开发者，记录架构、能力、关键坑、构建方式与未决项。
-> **最后更新：2026-10-31 第七轮（发版轮）**（发 v1.2.2 把第六轮优化真正送到用户手上：
-> 版本抬号 → `release.sh --github` 重新签名打包并发 Release → 逐段复核发版链路（SPEC D18）→
-> ditto 部署到 `/Applications`（旧包可逆隔离）→ 完整 harness 重跑 `PASS=13 FAIL=0` →
-> 同步修掉 SPEC D11 的「PASS=11 却自称当前值」文档漂移）。
+> **最后更新：2026-10-31 第九轮（发版轮）**（发布 v1.4.0 带来三大能力落地：
+> ① 自动更新端到端真机实测闭环完成，`replaceApp` 引入注入与回滚契约，补齐 H26–H28 断言（解开 §7 长期未决项）；
+> ② 滚轮加速快捷键（Scroll Boost）全面落地，按住指定修饰键临时放大倍率，离散/平滑无缝收拢（S1–S8）；
+> ③ 滚动曲线可视化预览（ScrollCurvePreview）在设置页与菜单栏实时渲染 0–500ms 归一化插值位移与 95% 到位耗时（S9–S17）；
+> 版本抬升至 1.4.0 → harness 升级至十四段 `PASS=14 FAIL=0` → 已部署至 `/Applications/Smoose.app`）。
 > 上一轮 **2026-10-28 第五轮** 攻破的是「受限环境编译不了 Swift 宏」这条长期限制：
 > `swiftc -disable-sandbox` → 全量编译 / 完整 harness 都能跑。
 >
@@ -88,13 +89,13 @@
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.3.0**（**2026-10-31 第八轮重新部署**）。Mach-O 二进制 sha256 `d1056d3619f28868471105c64d3c31c416115c931788cceea21e40f2590d43d5`（10-31 实测；此前各版 sha256 记录均作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.2.3-pre-130.app`（可回滚）。滚动接管、指针速度 0.5x–2x、静默更新检查链路、版本源 404 话术均实测过（更早轮次）；**自动更新的端到端安装（下载→替换→relaunch）仍未真跑，见 §7 未决项**。部署用 ditto 配方，见 §6.1a |
-| 源码 | `Sources/*.swift` 11 个文件，共 **3401 行**（Views 920 / Updater 713 / ScrollEngine 497 / App 409 / Model 305 / UpdateModel 198 / PointerController 174 / ScrollAxis 70 / Actions 54 / CursorZoom 48 / main 13；2026-10-31 `wc -l` 实测） |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.0**（**2026-10-31 第九轮重新部署**）。Mach-O 二进制 sha256 `89a87fab6887358632b88957fe684656d597ef57bc091eecff9385c624f68c00`（10-31 实测；此前各版 sha256 记录均作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app`（可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
+| 源码 | `Sources/*.swift` 12 个文件，共 **3776 行**（Views 1101 / Updater 716 / ScrollEngine 504 / App 409 / Model 310 / UpdateModel 198 / PointerController 174 / LogitechHIDPP 127 / ScrollAxis 116 / Actions 60 / CursorZoom 48 / main 13；2026-10-31 `wc -l` 实测） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
-| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/H 十三段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
+| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/H 十四段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
-| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / **v1.2.3（10-31 补发）** / v1.3.0，latest = v1.3.0；**版本号从 1.3.0 起顺延**） |
+| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / **v1.4.0**，latest = v1.4.0；**版本号从 1.4.0 起顺延**） |
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
@@ -471,9 +472,10 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
 
 ## 7. 已知限制 / 未决项
 
-- **未做（区别于 Mos / LinearMouse）**：
-  - Logitech HID++ 侧键识别、手势、DPI 控制（另一层复杂度，需厂商协议）。
-  - 输入法切换跟随等 Mos 附属功能。
+- **与 Mos 差异与已知限制**：
+  - 滚轮加速（Scroll Boost，1.4.0）与滚动曲线实时预览（1.4.0）已对齐 Mos。
+  - 侧键与手势：走 macOS 标准 HID button 3/4/5，罗技鼠标（如 G502 X、MX 等）插上直接可用，支持 13 种原生动作与每应用覆盖；Logitech HID++ 2.0 硬件 DPI 直控已支持。厂商特有的 HID++ 侧键上报与手势层维持不做。
+  - 输入法切换跟随等 Mos 附属功能维持不做（不属于鼠标增强主线）。
   - **更新替换后若签名身份变化，TCC 辅助功能授权会失效，`Updater` 尚未提示用户**（2026-10-26 审核标为 P2，未修）。当前同一账号签名不会触发，换账号打包会触发。
 - **启发式风险**：触控板判定靠 `IsContinuous/ScrollPhase/MomentumPhase`，个别第三方设备可能误判。
 - **距离倍率基准**：绝对基准依赖各 App 自身的行距换算，这正是 Mos 提供每应用配置的原因，本作同样支持。
@@ -481,12 +483,10 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   实际核对：`apply()` 有锁，无锁的是 `handlePointerMove` 的 rem 累积段（`lock.unlock()` 提前了）。
   现已全程持锁，G2c-8 断言守住（unlock 后不得再访问 rem），变异验证可抓回归。见 SPEC D17。
 - **版本比较**：`UpdateCheck` 只看 SemVer，不校验降级；`minSystem` 解析失败时放行（不阻塞检查）。
-- **自动更新的端到端安装未真跑（2026-10-31 仍未验证）**：v1.2.2 发版只做了链路**逐段**验证
-  （版本源 200 → `decide` 解出 available → asset sha256 一致 → zip 顶层布局 → 签名与 Team ID 对齐 → 部署后运行正常），
-  没有真跑一次「用户端点『下载并安装』→ 替换 `/Applications/Smoose.app` → relaunch 成新版本」。
-  上一次真跑通端到端是 D13（2026-10-22，1.1.0→1.2.0，本地 HTTP 版本源）。
-  要验证得让 App 自己检测到 v1.2.2 并点安装 —— 但本机已是 1.2.2，检测结果是 `upToDate`，
-  所以需要先把 `/Applications` 换成一个低版本包（隔离副本 `Smoose-1.2.1-predeploy.app` 正好可用）再触发检查。
+- ~~自动更新的端到端安装未真跑~~ **2026-10-31 已真跑通（D20）**：将 `/Applications/Smoose.app` 降级为 1.2.1 隔离副本后，
+  以真实驱动调用 `Updater.check` + `downloadAndInstall`，走 GitHub 真实源完整跑通 1.2.1 → 1.3.0 全流程
+  （下载 → sha256 校验 → 签名与 TeamID 校验 → 替换 `/Applications/Smoose.app` → 成功就绪）。
+  同时为 `replaceApp` 引入目标注入与原子回滚，并由 harness H26–H28 自动化测试守护。
 - **用户提过「Dock 继续」但症状不明（2026-10-31）**：已实测确认 Dock hover 放大、光标移开复位、无粘住都正常
   （10-19 的修复在 1.2.x 仍有效），当时配置 `pointerSpeedManaged=False`、`cursorZoomEnabled=False`。
   若用户再说 Dock 问题，先问清是哪种现象（放大失效 / 粘滞 / 图标不显示），别再盲改。

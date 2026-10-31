@@ -505,9 +505,12 @@ final class Updater: ObservableObject {
 
     /// 换掉 /Applications/Smoose.app。旧版先搬到临时目录，成功后再删 ——
     /// 万一替换失败还能把原版搬回去，不留「App 被删了却装不上」的死局。
-    static func replaceApp(at newApp: URL) throws {
+    ///
+    /// `target` 可注入是为了让 harness 能在临时目录里验证「替换失败必须回滚」——
+    /// 这段代码一旦出错就会删掉用户的 App，不能只靠人工在真机上试。
+    static func replaceApp(at newApp: URL,
+                           target: URL = URL(fileURLWithPath: "/Applications/Smoose.app")) throws {
         let fm = FileManager.default
-        let target = URL(fileURLWithPath: "/Applications/Smoose.app")
         let backup = fm.temporaryDirectory.appendingPathComponent("Smoose.backup-\(UUID().uuidString).app")
         let targetExists = fm.fileExists(atPath: target.path)
         if targetExists {
