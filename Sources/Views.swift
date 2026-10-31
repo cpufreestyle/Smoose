@@ -99,7 +99,8 @@ struct MenuBarPanel: View {
             footer
         }
         .padding(14)
-        .frame(width: 330)
+        // 菜单栏面板：宽随内容，不设上限（与设置窗口可拉伸的策略一致）
+        .frame(minWidth: 330)
     }
 
     private var header: some View {
@@ -525,7 +526,7 @@ struct AboutTab: View {
     @State private var feedSaved = false
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(alignment: .center, spacing: 14) {
             Image(systemName: "arrow.up.and.down.circle.fill")
                 .font(.system(size: 48)).foregroundStyle(.tint)
             Text("Smoose").font(.largeTitle.bold())
@@ -533,9 +534,9 @@ struct AboutTab: View {
             Text("拦截 HID 层滚轮事件，按显示刷新率重建滚动曲线：指数插值 + 亚像素累积投递。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(width: 380)
+                .frame(maxWidth: 420)
 
-            Divider().frame(width: 380)
+            Divider().frame(maxWidth: 420)
             HStack(alignment: .top, spacing: 24) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("诊断").font(.headline)
@@ -556,7 +557,7 @@ struct AboutTab: View {
                 }
             }
 
-            Divider().frame(width: 380)
+            Divider().frame(maxWidth: 420)
 
             // MARK: 创意联动
             VStack(alignment: .leading, spacing: 6) {
@@ -581,9 +582,9 @@ struct AboutTab: View {
                 .background(Color.secondary.opacity(0.08))
                 .cornerRadius(8)
             }
-            .frame(width: 380)
+            .frame(maxWidth: 420)
 
-            Divider().frame(width: 380)
+            Divider().frame(maxWidth: 420)
 
             // MARK: 自动更新
             VStack(alignment: .leading, spacing: 8) {
@@ -621,7 +622,7 @@ struct AboutTab: View {
                     TextField("版本源地址（留空用默认）", text: $feedDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11))
-                        .frame(width: 300)
+                        .frame(maxWidth: 340)
                     Button(feedSaved ? "已保存" : "保存") {
                         updater.setFeedURL(feedDraft)
                         feedSaved = true
@@ -638,7 +639,7 @@ struct AboutTab: View {
                 UpdateStatusView()
             }
             .font(.system(size: 11))
-            .frame(width: 380)
+            .frame(maxWidth: 420)
 
             Text("开源致敬：Mos (Caldis/Mos) · MIT").font(.system(size: 10)).foregroundStyle(.tertiary)
             Spacer()

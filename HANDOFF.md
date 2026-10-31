@@ -57,6 +57,19 @@
 > 且 `build.sh` 是 `rm -rf build` 再编译 —— 被杀时 `build/Smoose.app` 会停在只有 `AppIcon.icns` 的半成品状态。
 > 跑完整 harness / release 要用常驻 PTY 会话（前台 `tee`），别用 nohup 后台；被打断后先重跑 `./build.sh` 复原产物。
 >
+> **2026-10-31 第八轮（1.2.3 + 1.3.0 连发）**：两轮小修。**1.2.3** 修「GUI 无法调整大小」——
+> `SettingsWindow` 根视图固定 `.frame(width:560,height:520)` 把 `NSHostingView` 约束锁死，改为
+> `.frame(minWidth:560,minHeight:520)`；同时把工作区里未推送的罗技 HID++ 直控
+> （`Sources/LogitechHIDPP.swift`）、`TouchEvents.c` 原生轻扫手势、PointerTab 罗技 Section、
+> Cursor Forge Lab 入口一并入库（远端 `3dbde7f`）。**1.3.0（用户钦定版本号，后续顺延）** 修
+> 「窗口放大后内容不跟随」——关于页所有 `.frame(width:380)` 固定宽度改 `maxWidth:420`（随窗口拉伸），
+> 版本源输入框 `maxWidth:340`；菜单栏面板 `width:330` 改 `minWidth:330`。
+> `Info.plist` 曾被外部改成 1.3.0/5（非操作产生），1.2.3 曾临时纠回 1.2.3/5，1.3.0 正式定为 `1.3.0/6`。
+> Release `v1.3.0` 已发：asset sha256 `7db37abe…`（932976 字节）与产出端逐字节一致，下载包
+> `codesign --deep --strict` 通过、TeamIdentifier 对齐。部署 1.3.0 运行正常（二进制 sha256 `d1056d36…`），
+> harness `PASS=13 FAIL=0`。隔离备份链：`Smoose-1.2.1-predeploy` / `-1.2.3-pre-130` /
+> `-1.3.0-wrongver`（外部错误版本留证）。
+>
 > **2026-10-27 第二轮**：把含全部修复的新构建重新部署到 `/Applications`、清理历史遗留的嵌套 `Smoose.app`（见 §6.1）、
 > 补 `.gitignore`、实测确认 `--device` 真机断言在本环境没有可靠载体（§6.1b + SPEC §7 警告框）、
 > README/SPEC/HANDOFF 三处文档同步（阶段表改十一段、源码行数对齐实测、修正失实验证声明）。
@@ -75,13 +88,13 @@
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.2.2**（**2026-10-31 第七轮重新部署**）。Mach-O 二进制 sha256 `e3b0126a1c1950118056a598df21824018373231ff5647fc1a0fa0a5782b96f7`（10-31 实测；此前 1.2.1 记的 `87e4e24fe0b259b3…a07db` 已作废，再早的 `030c309d…` / `a26c1d37…` 同样作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化（ETag / 断点续传 / 事件时间戳 / rem 锁竞争收尾 / profile 帧循环缓存 / Release notes sha256）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。旧包隔离在 `/Applications/Smoose-1.2.1-predeploy.app`（可回滚）。滚动接管、指针速度 0.5x–2x、静默更新检查链路、版本源 404 话术均实测过（更早轮次）；**自动更新的端到端安装（下载→替换→relaunch）仍未真跑，见 §7 未决项**。部署用 ditto 配方，见 §6.1a |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.3.0**（**2026-10-31 第八轮重新部署**）。Mach-O 二进制 sha256 `d1056d3619f28868471105c64d3c31c416115c931788cceea21e40f2590d43d5`（10-31 实测；此前各版 sha256 记录均作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.2.3-pre-130.app`（可回滚）。滚动接管、指针速度 0.5x–2x、静默更新检查链路、版本源 404 话术均实测过（更早轮次）；**自动更新的端到端安装（下载→替换→relaunch）仍未真跑，见 §7 未决项**。部署用 ditto 配方，见 §6.1a |
 | 源码 | `Sources/*.swift` 11 个文件，共 **3401 行**（Views 920 / Updater 713 / ScrollEngine 497 / App 409 / Model 305 / UpdateModel 198 / PointerController 174 / ScrollAxis 70 / Actions 54 / CursorZoom 48 / main 13；2026-10-31 `wc -l` 实测） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
 | 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/H 十三段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
-| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2，latest = v1.2.2） |
+| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.3.0，latest = v1.3.0；**版本号从 1.3.0 起顺延，1.2.3 只在本机存在过、未发版**） |
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
