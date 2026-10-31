@@ -21,6 +21,7 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 "$SWIFTC" $SMOOSE_SWIFT_EXTRA -O \
   -target arm64-apple-macos14.0 \
   -sdk "$SDK" \
+  -I "$ROOT"/Sources \
   -o "$APP/Contents/MacOS/$NAME" \
   "$ROOT"/Sources/Model.swift \
   "$ROOT"/Sources/Actions.swift \
@@ -32,7 +33,9 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
   "$ROOT"/Sources/Views.swift \
   "$ROOT"/Sources/App.swift \
   "$ROOT"/Sources/CursorZoom.swift \
-  "$ROOT"/Sources/main.swift
+  "$ROOT"/Sources/LogitechHIDPP.swift \
+  "$ROOT"/Sources/main.swift \
+  "$ROOT"/Sources/TouchEvents.c
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 # 用 Apple Development 证书签名，DR 绑定证书而非 cdhash，

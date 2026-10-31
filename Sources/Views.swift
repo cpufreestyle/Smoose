@@ -81,6 +81,21 @@ struct MenuBarPanel: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Divider()
+            HStack {
+                Label("光标造物实验室", systemImage: "sparkles")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("体验网页版") {
+                    if let url = URL(string: "https://cursor-forge-lab.app.workbuddy.host/?sharecode=JFGQ2NRCSZ") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .foregroundStyle(.tint)
+            }
+            Divider()
             footer
         }
         .padding(14)
@@ -161,7 +176,9 @@ struct SettingsWindow: View {
             ButtonsTab().tabItem { Label("按键", systemImage: "rectangle.3.offgrid") }.tag(3)
             AboutTab().tabItem { Label("关于", systemImage: "info.circle") }.tag(4)
         }
-        .frame(width: 560, height: 520)
+        // 固定 width/height 会把 NSHostingView 的约束锁死，窗口边缘拖不动；
+        // 改成下限约束，允许用户按需放大（App.swift 里 styleMask 已含 .resizable）。
+        .frame(minWidth: 560, minHeight: 520)
     }
 }
 
@@ -541,6 +558,33 @@ struct AboutTab: View {
 
             Divider().frame(width: 380)
 
+            // MARK: 创意联动
+            VStack(alignment: .leading, spacing: 6) {
+                Text("创意联动").font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Cursor Forge Lab · 光标造物实验室").font(.system(size: 12, weight: .medium))
+                        Text("把鼠标轨迹实时变成热力图与艺术字，测测你的造物指数").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        if let url = URL(string: "https://cursor-forge-lab.app.workbuddy.host/?sharecode=JFGQ2NRCSZ") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    } label: {
+                        Label("立即体验", systemImage: "arrow.up.right.square")
+                    }
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.secondary.opacity(0.08))
+                .cornerRadius(8)
+            }
+            .frame(width: 380)
+
+            Divider().frame(width: 380)
+
             // MARK: 自动更新
             VStack(alignment: .leading, spacing: 8) {
                 Text("自动更新").font(.headline)
@@ -750,6 +794,9 @@ struct PointerTab: View {
                     Text("加速度存在 HID 进程内存里，重启或注销后回到系统默认；勾选「登录时启动」可开机自动套用。")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
+                Section("罗技专属（Logitech HID++ 硬件直控）") {
+                    LogitechSectionView()
+                }
             }
             .formStyle(.grouped)
 
@@ -764,6 +811,45 @@ struct PointerTab: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct LogitechSectionView: View {
+    @ObservedObject private var logi = LogitechHIDPP.shared
+    @State private var selectedDPI: Int = 1000
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: logi.isConnected ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                    .foregroundStyle(logi.isConnected ? Color.green : Color.secondary)
+                Text(logi.statusMessage)
+                    .font(.system(size: 11, weight: .medium))
+                Spacer()
+                Button("刷新") { logi.scan() }
+                    .font(.system(size: 11))
+            }
+
+            if logi.isConnected {
+                HStack(spacing: 8) {
+                    Text("硬件传感器 DPI：")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Picker("DPI", selection: $selectedDPI) {
+                        ForEach([400, 800, 1000, 1200, 1600, 2000, 2400, 3200], id: \.self) { dpi in
+                            Text("\(dpi) DPI").tag(dpi)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .onChange(of: selectedDPI) { _, newDpi in
+                        logi.setDPI(newDpi)
+                    }
+                }
+                Text("无需常驻体积庞大的 Logi Options+，直接通过罗技 HID++ 协议向板载芯片写入 DPI 硬件预设。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+        }
     }
 }
 

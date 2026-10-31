@@ -725,7 +725,10 @@ let kind = signatureKind(macho.path)
 require(kind == "adhoc", "H24 Mach-O 本身必须是 ad-hoc 已签名（实际=\(kind)）")
 if failures == 0 { print("H-OK") } else { exit(1) }
 HSWIFT
-if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -o "$WORK/h"     Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift     Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift     Sources/App.swift Sources/CursorZoom.swift "$WORK/main.swift" 2>"$WORK/h.log"; then
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/h" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/TouchEvents.c "$WORK/main.swift" 2>"$WORK/h.log"; then
   HFAILS="$(SMOOSE_H_ADHOC="$HADHOC" SMOOSE_H_TAMPER="$HTAMPER" \
 SMOOSE_H_REAL="/Applications/Smoose.app" "$WORK/h" 2>&1 | grep '^FAIL' || true)"
   # 第二趟：把同一个二进制包进一个 .app，用 Info.plist 把「期望 Team ID」改成别的值，

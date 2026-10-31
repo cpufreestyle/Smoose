@@ -2,6 +2,9 @@ import Foundation
 import CoreGraphics
 import AppKit
 
+@_silgen_name("smoose_post_native_swipe")
+func smoose_post_native_swipe(_ direction: Int32)
+
 enum ActionRunner {
     static func run(_ action: ButtonAction) {
         switch action {
@@ -16,9 +19,12 @@ enum ActionRunner {
         case .showDesktop:
             tap(keyCode: 103, flags: .maskSecondaryFn)
         case .back:
-            tap(keyCode: 33, flags: .maskCommand)
+            // 优先投递原生触控板轻扫手势（左滑 4，在 Safari/Chrome/Finder 中触发平滑跟手翻页）
+            // 替代容易与文本输入框光标冲突的 Cmd+[
+            smoose_post_native_swipe(4)
         case .forward:
-            tap(keyCode: 30, flags: .maskCommand)
+            // 优先投递原生触控板轻扫手势（右滑 8，触发平滑前进）
+            smoose_post_native_swipe(8)
         case .spaceLeft:
             tap(keyCode: 123, flags: .maskControl)
         case .spaceRight:
