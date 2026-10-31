@@ -94,7 +94,7 @@
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
 | 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/H 十三段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
-| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.3.0，latest = v1.3.0；**版本号从 1.3.0 起顺延，1.2.3 只在本机存在过、未发版**） |
+| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / **v1.2.3（10-31 补发）** / v1.3.0，latest = v1.3.0；**版本号从 1.3.0 起顺延**） |
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
