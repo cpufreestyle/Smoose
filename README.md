@@ -3,6 +3,13 @@
 一个仿 [Mos](https://github.com/Caldis/Mos)（公认最好的 macOS 鼠标滚动增强工具）的原生菜单栏 App：
 把鼠标滚轮的"一格一跳"重建成触控板那样的连续滚动曲线。原生 Swift，无第三方依赖。
 
+## 下载安装
+
+到 [Releases](https://github.com/cpufreestyle/Smoose/releases/latest) 下载 `Smoose-<版本>.zip`，
+解压后把 `Smoose.app` 拖进「应用程序」文件夹即可。已装旧版的用户直接在
+App 内「关于 → 检查更新」自动升级；覆盖安装保留辅助功能授权，无需重新授权。
+每个 Release 页面都附有变更说明与安装包 sha256，可自行核对。
+
 ## 功能
 
 | 功能 | 说明 |
@@ -17,9 +24,12 @@
 | 每应用配置 | 按 bundle id 单独配置，或从「预设」一键套用（默认 / 干脆 / 丝滑 / 浏览器 / 原生 App / 聊天软件 / 跳过此 App） |
 | 修饰键透传 | 按住 ⌘⌥⌃⇧ 等修饰键时跳过接管、原样透传（精确操作场景） |
 | 按键绑定 | 中键与侧键 3/4/5 绑定到调度中心、启动台、⌘⇥、显示桌面、浏览器前后、切换桌面、截图面板等；支持前后键互换、抬起时触发、按应用单独绑定 |
+| 原生轻扫手势 | 侧键「前进 / 后退」优先投递原生触控板轻扫手势（Safari/Chrome/Finder 平滑跟手翻页），替代 Cmd+[ / Cmd+]，不再与文本输入框光标冲突 |
 | 指针加速度 | 直接改写 IOHIDSystem 的 HID 参数（等价于 LinearMouse 核心能力），0 = 线性无加速 |
 | 指针速度倍率 | Event Tap 原地改写 `mouseMoved` 的 delta（`HIDPointerResolution` 在现代 macOS 不可写，所以不走 HID） |
 | 指针放大 | 开关系统光标放大 |
+| 罗技硬件直控 | 纯 Swift 原生 HID++ 2.0 协议：自动检测 USB 接收器 / 蓝牙连接的罗技鼠标，直接读写硬件传感器 DPI（400–3200），无需常驻 Logi Options+ |
+| 窗口自适应 | 设置窗口可拖拽调整大小，放大后内容跟随拉伸；菜单栏弹窗宽随内容 |
 | 开机启动 | SMAppService 登录项 |
 | 权限自愈 | 授权被撤销自动停 tap，恢复后自动重建；菜单栏绿点 = 已授权，红点 = 未授权 |
 | 自动更新 | 版本源拉取 → SemVer 比较 → 增量进度下载 → **签名校验** → 替换重启，零第三方依赖 |
@@ -85,10 +95,11 @@ Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
 在已经禁止嵌套沙箱的环境里会报 `SwiftUIMacros.StateMacro ... malformed response`。
 这种环境用 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh`（`run_tests.sh` 同理）。普通终端不用设。
 
-源码 11 个文件：`main.swift`（纯 AppKit 入口）、`App.swift`（AppDelegate / 状态栏 / 窗口自愈）、
+源码 15 个文件：`main.swift`（纯 AppKit 入口）、`App.swift`（AppDelegate / 状态栏 / 窗口自愈）、
 `Views.swift`（界面）、`Model.swift`（配置模型）、`ScrollAxis.swift`（插值引擎，纯逻辑）、
 `ScrollEngine.swift`（事件拦截 + 帧驱动 + 指针速度）、`PointerController.swift`（HID 指针加速度）、
-`Actions.swift`（按键动作）、`CursorZoom.swift`（光标放大）、`Updater.swift` + `UpdateModel.swift`（自动更新）。
+`Actions.swift`（按键动作）、`CursorZoom.swift`（光标放大）、`Updater.swift` + `UpdateModel.swift`（自动更新）、
+`LogitechHIDPP.swift`（罗技 HID++ 直控）、`TouchEvents.c/h`（原生轻扫手势投递）+ `IOHIDEvent*.h`（私有头）。
 
 ### 一键验证（harness）
 
@@ -164,7 +175,7 @@ App 持有辅助功能权限（能监听并合成全局输入），所以「自�
 
 ## 与 Mos 的差距 / 已知限制
 
-- 没有做了 Mos 的 Logitech HID++ 侧键识别、手势、DPI 控制、输入法切换（那些是另一层复杂度）
+- Logitech HID++ 硬件 DPI 直控已实现（1.3.0）；Mos 的 HID++ 侧键识别、手势、输入法切换仍未做（那些是另一层复杂度）
 - 触控板判定走 `IsContinuous`/`ScrollPhase`/`MomentumPhase` 启发式，个别第三方设备可能误判 → 关掉「忽略触控板」即可对该设备生效
 - 「距离倍率」的绝对基准依赖各 App 自己对滚轮的行距换算，这也是 Mos 提供每应用配置的原因；本作同样支持
 - 署名：仅做学习与自用，Mos 原作 MIT 协议 © Caldis。本项目未包含 Mos 任何源码。
