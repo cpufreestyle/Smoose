@@ -89,13 +89,13 @@
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.0**（**2026-10-31 第九轮重新部署**）。Mach-O 二进制 sha256 `89a87fab6887358632b88957fe684656d597ef57bc091eecff9385c624f68c00`（10-31 实测；此前各版 sha256 记录均作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app`（可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.1**（**2026-11-01 发版后部署**）。Mach-O 二进制 sha256 `3458df6d8aa0f1b4c9b12bb18595622b1042017d7c0edd4e3060febc1bd7a01f`（1.4.1 部署后实测；此前各版 sha256 记录均作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app`（可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
 | 源码 | `Sources/*.swift` 12 个文件，共 **3776 行**（Views 1101 / Updater 716 / ScrollEngine 504 / App 409 / Model 310 / UpdateModel 198 / PointerController 174 / LogitechHIDPP 127 / ScrollAxis 116 / Actions 60 / CursorZoom 48 / main 13；2026-10-31 `wc -l` 实测） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
 | 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/H 十四段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
-| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / **v1.4.0**，latest = v1.4.0；**版本号从 1.4.0 起顺延**） |
+| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / **v1.4.1**，latest = v1.4.1；**版本号从 1.4.0 起顺延**） |
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
@@ -594,6 +594,16 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
       兜底改回 6.0 → S31g 红。
       ⚠️ 过程里删掉过一个 `setObserving(_:)` 半成品（`isObserving` 只写不读、没人调用）——不留死代码。
       本轮同样**尚未发 Release**（版本仍 1.4.0）。
+
+- [x] **发 v1.4.1（2026-11-01 完成）**：`Resources/Info.plist` 抬到 `1.4.1`（`CFBundleVersion` 8）→
+      `./scripts/release.sh --github --repo cpufreestyle/Smoose` → Release `v1.4.1` 已发、asset `Smoose-1.4.1.zip`
+      （951496 字节）已上传、`latest = v1.4.1`。逐段复核：下载的 zip sha256 `cdc55b60…e81a` 与产出端一致 →
+      顶层即 `Smoose.app`、`CFBundleIdentifier=app.smoose.macos`、`codesign --verify --deep --strict` 通过、
+      `TeamIdentifier=6U2DQJ6Z2N` → 真实 `UpdateCheck.decide(current:"1.4.0"/"1.3.0"/"1.2.3")` 均 `available(1.4.1)`、
+      `decide(current:"1.4.1")` 与 `decide(current:"1.5.0")` 均 `upToDate`。
+      发版内容是第十轮 D21-D23（配置层修复）+ 第十一轮 D24-D26（轮询改事件驱动、同键冲突提示），
+      未动引擎滚动行为，所以从 1.4.0 升上来的手感不变。版本号提交 `6867a01`。
+      部署后 `run_tests.sh` 复跑 `PASS=20 FAIL=0`。
 
 ### 历史轮次要点（避免重复踩坑）
 
