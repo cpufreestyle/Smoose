@@ -476,7 +476,8 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   - 滚轮加速（Scroll Boost，1.4.0）与滚动曲线实时预览（1.4.0）已对齐 Mos。
   - 侧键与手势：走 macOS 标准 HID button 3/4/5，罗技鼠标（如 G502 X、MX 等）插上直接可用，支持 13 种原生动作与每应用覆盖；Logitech HID++ 2.0 硬件 DPI 直控已支持。厂商特有的 HID++ 侧键上报与手势层维持不做。
   - 输入法切换跟随等 Mos 附属功能维持不做（不属于鼠标增强主线）。
-  - **更新替换后若签名身份变化，TCC 辅助功能授权会失效，`Updater` 尚未提示用户**（2026-10-26 审核标为 P2，未修）。当前同一账号签名不会触发，换账号打包会触发。
+  - ~~更新替换后若签名身份变化无提示~~ **2026-10-31 已修（P2）**：`Updater.signingAuthority` 提取新旧 bundle 的叶子证书 Authority，
+    若发生变更则在重启就绪视图中明确提示「新版本签名证书变更，重启后 macOS 可能会撤销辅助功能权限，届时需在系统设置中重新勾选」，并在 harness 中由 H29–H30 守住。
 - **启发式风险**：触控板判定靠 `IsContinuous/ScrollPhase/MomentumPhase`，个别第三方设备可能误判。
 - **距离倍率基准**：绝对基准依赖各 App 自身的行距换算，这正是 Mos 提供每应用配置的原因，本作同样支持。
 - **数据竞争（已修，2026-10-29）**：`pointerRemX/Y` 在 tap 线程读写、`apply()` 主线程重置。原记录称「无锁、未修」，

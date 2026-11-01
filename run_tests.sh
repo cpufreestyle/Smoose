@@ -864,6 +864,15 @@ do {
     require(verOf(live) == "1.2.1", "H28 旧版必须回滚（实际=\(verOf(live) ?? "被删了")）")
 }
 try? fm2.removeItem(at: sandbox)
+
+// H29-H30 签名证书身份（Authority）变化检测（P2 授权失效提示）
+if !pReal.isEmpty, fm2.fileExists(atPath: pReal) {
+    let realAuth = Updater.signingAuthority(of: URL(fileURLWithPath: pReal))
+    require(realAuth != nil && !realAuth!.isEmpty, "H29 官方包签名 Authority 可读取（实际=\(realAuth ?? "nil")）")
+}
+let adhocAuth = Updater.signingAuthority(of: URL(fileURLWithPath: pAdhoc))
+require(adhocAuth == nil, "H30 ad-hoc 包不应解析出签名 Authority（实际=\(adhocAuth ?? "")）")
+
 if failures == 0 { print("H-OK") } else { exit(1) }
 HSWIFT
 if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/h" \

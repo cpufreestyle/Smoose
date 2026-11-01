@@ -76,6 +76,9 @@ final class Updater: ObservableObject {
     @Published private(set) var available: UpdateManifest?
     /// 用户点过「跳过此版本」的版本号集合
     @Published private(set) var skippedVersions: Set<String> = []
+    /// 若新版本的签名证书与当前运行的不同（例如不同开发者打包），
+    /// macOS TCC 可能会撤销辅助功能权限，界面需给出明确提示（P2 已修）。
+    @Published private(set) var needsReauthorizationNotice: Bool = false
 
     private var task: URLSessionTask?
     private var downloadTask: URLSessionDownloadTask?
@@ -466,10 +469,16 @@ final class Updater: ObservableObject {
                 }
                 // 签名校验才是身份校验：bundle id 谁都能写，Team ID 写不了
                 try Self.verifySignature(of: app)
+                // 检查签名身份（叶子证书 Authority）是否发生变化。
+                // 同一 Team 下不同证书重新签名会导致 TCC 绑定的 Designated Requirement 失效。
+                let currentAuth = Self.signingAuthority(of: Bundle.main.bundleURL)
+                let newAuth = Self.signingAuthority(of: app)
+                let reauth = (currentAuth != nil && newAuth != nil && currentAuth != newAuth)
                 try Self.replaceApp(at: app)
                 // 安装包可能在「应用程序」里，替换后原 zip 已失效，直接清掉
                 try? fm.removeItem(at: cleanup)
                 DispatchQueue.main.async {
+                    self.needsReauthorizationNotice = reauth
                     self.phase = .readyToRelaunch(self.available?.version ?? "")
                 }
             } catch let e as UpdateInstallError {
@@ -489,6 +498,26 @@ final class Updater: ObservableObject {
             if u.lastPathComponent == "Smoose.app",
                let v = try? u.resourceValues(forKeys: [.isDirectoryKey]), v.isDirectory == true {
                 return u
+            }
+        }
+        return nil
+    }
+
+    /// 读取 bundle 的首个签名机构（叶子证书 subject.CN），ad-hoc 或未签名返回 nil。
+    static func signingAuthority(of app: URL) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        p.arguments = ["--display", "--verbose=4", app.path]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        for line in out.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("Authority=") {
+                return String(t.dropFirst("Authority=".count))
             }
         }
         return nil

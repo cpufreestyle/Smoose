@@ -727,6 +727,15 @@ struct UpdateStatusView: View {
                     Label("v\(v) 已就绪，重启后生效", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .font(.system(size: 11))
+                    if updater.needsReauthorizationNotice {
+                        HStack(alignment: .top, spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("新版本签名证书变更，重启后 macOS 可能会撤销辅助功能权限，届时需在系统设置中重新勾选。")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Button("立即重启") { updater.relaunch() }
                         .controlSize(.small)
                 }

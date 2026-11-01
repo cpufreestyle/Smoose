@@ -89,6 +89,7 @@
 | F2 | `release.sh` 参数解析 + `gh` 路径解析 | `--repo owner/name` / Homebrew gh 路径回归 |
 | H | 编译真实 `Sources/` 断言自动更新安全加固 | https 强制 / Team ID / sha256 / 拒 ad-hoc 回归 |
 | H26–H28 | `Updater.replaceApp(at:target:)` 回滚契约 | 替换成功 / 验签失败回滚 / 新包缺失回滚 |
+| H29–H30 | 签名身份 Authority 变化检测 | 提取证书 CN / ad-hoc 为空 / 提示重新授权 |
 
 用法：
     ./run_tests.sh             # A B C D E F F2 G G2 G2b G2c G3 H（离线）
@@ -459,6 +460,8 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
   **断言**：H26 正常替换换成新版、H27 新包签名无效必须回滚成旧版、H28 新包缺失也必须回滚。
   H26 的新包必须用**真证书签名**的包（用 `/Applications/Smoose.app` 充当），否则会先被 `verifySignature`
   拒掉而测不到替换路径 —— 这是本轮踩到的第一个假绿诱因。
+  H29–H30 断言 `signingAuthority` 对官方包有效提取证书 subject.CN、对 ad-hoc 包返回 nil，
+  并在身份发生变化时触发界面重新授权提示（P2 已修）。
 - D13 端到端闭环（2026-10-22 第五轮，真机实测）：本地 HTTP 版本源 + 真实签名的 1.2.0 安装包，跑通「检查 → 增量进度下载（0→100%，13 帧）→ 解压 → bundle id 校验 → 替换 /Applications/Smoose.app → relaunch → 新进程以 1.2.0 运行」。版本比较回归：当前 1.2.0/1.2.1/1.3.0 对 feed 1.2.0 均 `upToDate`，1.1.0 → `available`。
 - D10 版本源 HTTP 错误话术（2026-10-22 新增）：默认版本源指向一个还没创建的 GitHub 仓库，404 是必然结果，只显示「HTTP 404」用户完全不知道该干什么。断言默认 404 文案含「还没有发布记录」并指向「关于」页、自建源 404 不含默认文案、403 / 401 / 500 各自可操作。真实源码由 G2 反 drift 守住。
 - F 发布产出端（2026-10-22 补）：A-E 只覆盖消费端（Updater 的版本比较 / 下载 / 安装），产出端此前完全靠人工点一遍。F 跑 `./scripts/release.sh` 后**独立复核**三条 Updater 硬要求 —— zip 顶层必须是 `Smoose.app`、`CFBundleIdentifier` 必须是 `app.smoose.macos`、解出来的 App 签名必须有效。刻意不信 release.sh 自己的自检：自检被删掉或改松时，F 仍然会发现。已做变异验证：把 `Resources/Info.plist` 的 bundle id 改成 `app.smoose.WRONG`，F 如预期 FAIL（`bundle id 是 app.smoose.WRONG 而不是 app.smoose.macos`），改回后恢复 PASS。
