@@ -89,13 +89,13 @@
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.1**（**2026-11-01 发版后部署**）。Mach-O 二进制 sha256 `3458df6d8aa0f1b4c9b12bb18595622b1042017d7c0edd4e3060febc1bd7a01f`（1.4.1 部署后实测；此前各版 sha256 记录均作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app`（可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 部署后实测）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app`（可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
 | 源码 | `Sources/*.swift` 12 个文件，共 **3971 行**（Views 1174 / Updater 749 / ScrollEngine 504 / App 409 / Model 355 / UpdateModel 198 / PointerController 186 / LogitechHIDPP 145 / ScrollAxis 130 / Actions 60 / CursorZoom 48 / main 13；2026-11-01 `wc -l` 实测） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
 | 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/S18-S24/S25-S27/S28-S31/S32-S34/H **二十一段**，2026-11-01 `PASS=23 FAIL=0`）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
-| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / **v1.4.1**，latest = v1.4.1；**版本号从 1.4.0 起顺延**） |
+| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / v1.4.1 / **v1.4.2**，latest = v1.4.2；**版本号从 1.4.0 起顺延**） |
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
@@ -622,6 +622,17 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
       `checking → updateFound(1.4.1) → downloading(0→98%) → installing → readyToRelaunch(1.4.1)`，
       同进程内 `dismiss()` 前后 phase 不变（no-op 实测）。链路自己把 /Applications 装成了 1.4.1。
       本轮同样**尚未发 Release**（版本仍 1.4.1）。
+
+- [x] **发 v1.4.2（2026-11-01 完成）**：`Resources/Info.plist` 抬到 `1.4.2`（`CFBundleVersion` 9）→
+      `./scripts/release.sh --github --repo cpufreestyle/Smoose` → Release `v1.4.2` 已发、asset `Smoose-1.4.2.zip`
+      （958043 字节）已上传、`latest = v1.4.2`。逐段复核：下载 zip sha256 `44184b2e…773f` 与产出端一致 →
+      顶层 `Smoose.app`、`CFBundleShortVersionString=1.4.2` / `CFBundleVersion=9`、bundle id `app.smoose.macos`、
+      `codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` → 真实 `UpdateCheck.decide`
+      对 GitHub 真实响应：`1.4.1` / `1.4.0` / `1.3.0` 均 `available(1.4.2)`，`1.4.2` / `1.5.0` 均 `upToDate`
+      → 部署后复跑 harness `PASS=23 FAIL=0`。
+      **为什么发这一版**：v1.4.1 的 asset 是第十/十一轮的代码，**不含**第十二轮的 D27-D29
+      （菜单栏补齐更新全流程、dismiss 不丢已安装更新）。版本号提交 `451ad3e`。
+      部署后 `/Applications/Smoose.app` 版本 1.4.2、Mach-O sha256 `d88b7205…0dca`、授权 `auth_value=2` 保留。
 
 ### 历史轮次要点（避免重复踩坑）
 
