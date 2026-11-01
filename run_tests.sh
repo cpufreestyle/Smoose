@@ -819,6 +819,81 @@ if [ -n "$POLLSEC" ]; then
 fi
 if [ -z "$S31FAILS" ]; then ok "S31 指针配置事件驱动（通知 / 签名判空 / 兜底拉长）"; else bad "S31$S31FAILS"; fi
 
+echo "== S32-S34: 更新流程的菜单栏出口（2026-11-01，编译真 Updater.swift 断言）=="
+# 背景：用户从菜单栏点「下载并安装」，装完却没有任何反馈 —— readyToRelaunch
+# 只在「关于」页有「立即重启」按钮，菜单栏面板完全不显示这个状态，
+# 而 dismiss() 又能把 readyToRelaunch 打回 idle，等于把唯一的重启入口弄丢。
+# Updater.swift 依赖 AppKit + Preferences + UpdateManifest，整编不了，
+# 所以抽出一个纯逻辑函数来承载「哪些状态可以收起」这条契约。
+S32DIR="$WORK/s32dir"
+/bin/mkdir -p "$S32DIR"
+/bin/cat > "$S32DIR/main.swift" <<'S32SWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+
+let box = FileManager.default.contents(atPath: CommandLine.arguments[1]).map { String(decoding: $0, as: UTF8.self) } ?? ""
+func codeOnly(_ s: String) -> String {
+    s.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+}
+let src = codeOnly(box)
+
+// S32 dismiss() 必须挡在 readyToRelaunch 前面：新版已落盘，收起横幅 = 丢掉重启入口
+// 注意：必须在 dismiss() 函数体内比较顺序。整个文件里 cancel() 也写 phase = .idle，
+// 直接在全文找 "phase = .idle" 会先命中 cancel 那一处，断言永远红（第一版就踩了）。
+guard let dStart = src.range(of: "func dismiss()")?.lowerBound else {
+    print("FAIL S32 找不到 dismiss()"); exit(1)
+}
+let dBody = String(src[dStart...])
+let dEnd = dBody.range(of: "func skipVersion")?.lowerBound ?? dBody.endIndex
+let dismissSrc = String(dBody[..<dEnd])
+require(dismissSrc.contains("if case .readyToRelaunch = phase { return }"),
+        "S32a dismiss 必须拒绝收起 readyToRelaunch")
+require(dismissSrc.contains("guard !phase.isBusy else { return }"),
+        "S32b dismiss 仍须保留 busy 守卫")
+let guardRange = dismissSrc.range(of: "if case .readyToRelaunch = phase { return }")?.lowerBound
+let idleRange = dismissSrc.range(of: "phase = .idle")?.lowerBound
+require(guardRange != nil && idleRange != nil && guardRange! < idleRange!,
+        "S32c readyToRelaunch 守卫必须在 phase = .idle 之前")
+// dismiss 自己的 busy 守卫不能被拿掉
+require(src.contains("guard !phase.isBusy else { return }"),
+        "S32c dismiss 仍须保留 busy 守卫")
+
+if failures == 0 { print("S32-OK") } else { exit(1) }
+S32SWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$WORK/s32" "$S32DIR/main.swift" 2>"$WORK/s32.log"; then
+  if "$WORK/s32" "$ROOT/Sources/Updater.swift" >/dev/null; then ok "S32 dismiss 不丢已安装更新（3 项）"; else bad "S32 $("$WORK/s32" 2>&1 | grep '^FAIL' | tr '\n' ' ')"; fi
+else
+  bad "S32 编译失败$(tail -3 "$WORK/s32.log")"
+fi
+
+# S33-S34 菜单栏必须覆盖下载 / 安装 / 待重启三种状态（Views 侧接线）
+VIEWS_SRC="$ROOT/Sources/Views.swift"
+S33FAILS=""
+MB="$(/usr/bin/awk '/^struct MenuBarPanel/,/^    private var header/' "$VIEWS_SRC")"
+/bin/echo "$MB" | /usr/bin/grep -q 'case .downloading' || S33FAILS="$S33FAILS S33a"
+/bin/echo "$MB" | /usr/bin/grep -q 'case .installing' || S33FAILS="$S33FAILS S33b"
+/bin/echo "$MB" | /usr/bin/grep -q 'case .readyToRelaunch' || S33FAILS="$S33FAILS S33c"
+/bin/echo "$MB" | /usr/bin/grep -q 'updater.relaunch()' || S33FAILS="$S33FAILS S33d"
+# 三种状态都要有进度 / 文案，不能只有空壳
+/bin/echo "$MB" | /usr/bin/grep -q '正在下载' || S33FAILS="$S33FAILS S33e"
+/bin/echo "$MB" | /usr/bin/grep -q '正在安装' || S33FAILS="$S33FAILS S33f"
+/bin/echo "$MB" | /usr/bin/grep -q '重启后生效' || S33FAILS="$S33FAILS S33g"
+# 菜单栏里不得再出现「稍后再说」：那正是把已安装更新关掉的入口。
+# 必须先剥注释 —— 解释「为什么不提供稍后再说」的注释里本身就含这四个字，
+# 不剥的话断言永远红（第一版就这么误报过）。
+MBNC="$(/bin/echo "$MB" | /usr/bin/sed -E 's://.*$::')"
+/bin/echo "$MBNC" | /usr/bin/grep -q '稍后再说' && S33FAILS="$S33FAILS S33h"
+if [ -z "$S33FAILS" ]; then ok "S33 菜单栏覆盖下载/安装/待重启（8 项）"; else bad "S33$S33FAILS"; fi
+
+# S34 「关于」页原有的出口不能被这次改动挤掉
+S34FAILS=""
+AB="$(/usr/bin/awk '/^struct UpdateStatusView/,/^}/' "$VIEWS_SRC")"
+/bin/echo "$AB" | /usr/bin/grep -q 'case .readyToRelaunch' || S34FAILS="$S34FAILS S34a"
+/bin/echo "$AB" | /usr/bin/grep -q '立即重启' || S34FAILS="$S34FAILS S34b"
+/bin/echo "$AB" | /usr/bin/grep -q '跳过此版本' || S34FAILS="$S34FAILS S34c"
+if [ -z "$S34FAILS" ]; then ok "S34 关于页出口完整"; else bad "S34$S34FAILS"; fi
+
 echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
 # 2026-10-26 加的安全加固此前一条 harness 都没有（run_tests.sh 还停在 10-23），
 # 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。

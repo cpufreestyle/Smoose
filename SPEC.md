@@ -110,6 +110,8 @@ boostModifiers/boostFactor 且覆盖 speed；「跳过此 App」仍 enabled=fals
 | S28–S29 | 编译真 `Sources/ScrollAxis.swift` 验键位冲突判定 + Views 接线 | 加速键与透传键同键时无提示 |
 | S30 | 文本守卫 `LogitechHIDPP` 事件驱动 | 回到 5 秒轮询、漏注册 removal、Unmanaged 引用泄漏 |
 | S31 | 文本守卫 `PointerController` / `Model.swift` 配置通知 | 通知没真发、签名没判空、兜底轮询退回过短 |
+| S32 | 编译真 `Sources/Updater.swift` 验 `dismiss()` 不丢已安装更新 | 守卫被删、守卫顺序错、busy 守卫被拿掉 |
+| S33–S34 | 文本守卫菜单栏 / 关于页更新出口 | 菜单栏不显示下载/安装/待重启、加回「稍后再说」、关于页出口被挤掉 |
 
 用法：
     ./run_tests.sh             # A B C D E F F2 G G2 G2b G2c G3 H（离线）
@@ -551,3 +553,34 @@ S30 文本守卫罗技侧无 `scheduledTimer(5.0)` / 无 `pollTimer` / 两个回
 `takeUnretainedValue` 配平；S31 文本守卫通知真的发（不是只定义）、签名判空在、兜底 ≥ 30 秒。
 变异验证：`conflicts` 恒返 false → S28e/S28f 红；删 removal 回调 → S30b 红；
 删 persist 里的发通知块 → S31b/S31e 红；兜底改回 6.0 → S31g 红。
+
+## 24. 更新流程的菜单栏出口（2026-11-01，真机端到端验证）
+
+用户从菜单栏点「下载并安装」，装完却没有任何反馈：`readyToRelaunch` 只在「关于」页有
+「立即重启」按钮，菜单栏面板完全不显示下载 / 安装 / 待重启三个状态。更糟的是
+`dismiss()` 会把 `readyToRelaunch` 打回 `.idle`——新版本已经替换到 `/Applications`，
+收起横幅等于把唯一的重启入口弄丢，用户只能手动重启 App（甚至不知道有新版在等他）。
+
+- **D27 菜单栏补齐更新全流程**：`MenuBarPanel` 新增 `downloading`（进度条 + 百分比）、
+  `installing`（"正在安装，请勿退出 Smoose…"）、`readyToRelaunch`（"已就绪，重启后生效" +
+  签名证书变更警告 + 「立即重启」/「去设置页」）三个分支。与「关于」页出口并存，不互相替代。
+- **D28 `dismiss()` 不得收起已安装的更新**：`readyToRelaunch` 时 dismiss 是 no-op。
+  这个状态要么重启、要么一直挂在菜单栏当提醒；因此菜单栏那个分支**不提供**「稍后再说」按钮
+  （提供了也关不掉，反而误导）。
+- **D29 `dismiss()` 的 busy 守卫保留**：下载 / 安装中仍要挡住误触。
+
+**断言**：S32 编译真 `Sources/Updater.swift`，剥注释后在 `dismiss()` 函数体内比较
+（全文搜 `phase = .idle` 会先命中 `cancel()` 那一处，第一版断言就这么误报过）；
+S33 文本守卫 MenuBarPanel 覆盖三个状态且**剥注释后**不含「稍后再说」
+（解释「为什么不提供」的注释里本身就含这四个字，不剥永远红）；
+S34 文本守卫「关于」页原有出口没被挤掉。
+变异验证：删守卫 → S32a/c 红；守卫挪到 `phase = .idle` 之后 → S32c 红；
+把「稍后再说」按钮加回去 → S33h 红。
+
+**真机端到端（2026-11-01，不是离线断言）**：把 `/Applications/Smoose.app` 降到 1.4.0，
+用编译进去的真实 `Updater` 驱动完整链路，phase 序列实测：
+`checking → updateFound(1.4.1) → downloading(0%…98%) → installing → readyToRelaunch(1.4.1)`；
+同一进程内 `dismiss()` 前后 phase 均为 `readyToRelaunch(1.4.1)`（no-op 实测成立）。
+链路跑完后 `/Applications/Smoose.app` 已被自动更新自己替换成 1.4.1（`CFBundleVersion` 8、
+`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、Mach-O sha256
+`3458df6d…bd7a01f` 与发版产物一致），辅助功能授权 `auth_value=2` 保留。

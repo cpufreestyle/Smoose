@@ -90,10 +90,10 @@
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
 | 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.1**（**2026-11-01 发版后部署**）。Mach-O 二进制 sha256 `3458df6d8aa0f1b4c9b12bb18595622b1042017d7c0edd4e3060febc1bd7a01f`（1.4.1 部署后实测；此前各版 sha256 记录均作废）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app`（可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
-| 源码 | `Sources/*.swift` 12 个文件，共 **3776 行**（Views 1101 / Updater 716 / ScrollEngine 504 / App 409 / Model 310 / UpdateModel 198 / PointerController 174 / LogitechHIDPP 127 / ScrollAxis 116 / Actions 60 / CursorZoom 48 / main 13；2026-10-31 `wc -l` 实测） |
+| 源码 | `Sources/*.swift` 12 个文件，共 **3971 行**（Views 1174 / Updater 749 / ScrollEngine 504 / App 409 / Model 355 / UpdateModel 198 / PointerController 186 / LogitechHIDPP 145 / ScrollAxis 130 / Actions 60 / CursorZoom 48 / main 13；2026-11-01 `wc -l` 实测） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
-| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/H 十四段）、`Tests/InterpTest.swift`、`Probe/main.swift` |
+| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/S18-S24/S25-S27/S28-S31/S32-S34/H **二十一段**，2026-11-01 `PASS=23 FAIL=0`）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
 | 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / **v1.4.1**，latest = v1.4.1；**版本号从 1.4.0 起顺延**） |
 
@@ -505,6 +505,11 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   真变了才发 `.smoosePointerConfigChanged`；兜底轮询拉长到 60 秒且只在接管加速度时才跑。由 S31 守住。
 - ~~加速键与透传键同键时无提示~~ **2026-11-01 已加界面警告（D26）**：`ScrollBoost.conflicts(bypass:boost:)`
   纯函数 + 「按住加速」段橙色提示。引擎行为本来就是对的（透传优先），补的是可发现性。由 S28/S29 守住。
+  * ~~菜单栏点「下载并安装」后装完没反馈~~ **2026-11-01 已修（D27）**：MenuBarPanel 补上
+  downloading / installing / readyToRelaunch 三个分支（进度条、安装中提示、立即重启 + 证书变更警告）。
+  * ~~`dismiss()` 会丢掉已安装的更新~~ **2026-11-01 已修（D28）**：新版本已替换到 /Applications，
+  收起横幅 = 丢掉唯一重启入口。readyToRelaunch 时 dismiss 为 no-op，该分支也不提供「稍后再说」。
+  由 S32/S33 守住，且已真机端到端实测（D29）。
 - ~~`teamMismatch` 无自动载体~~ **2026-10-28 已解决（H25）**：用「改期望值」而不是「造假包」拿到载体 ——
   把测试二进制包进带 `SmooseUpdateTeamID` 的 `.app`，官方包就会撞上 teamMismatch。`verifySignature` 的
   三条拒因分支（ad-hoc → `notSigned`、篡改 → `signatureInvalid`、他人 Team → `teamMismatch`）现在都有断言。
@@ -604,6 +609,19 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
       发版内容是第十轮 D21-D23（配置层修复）+ 第十一轮 D24-D26（轮询改事件驱动、同键冲突提示），
       未动引擎滚动行为，所以从 1.4.0 升上来的手感不变。版本号提交 `6867a01`。
       部署后 `run_tests.sh` 复跑 `PASS=20 FAIL=0`。
+
+- [x] **2026-11-01 第十二轮：更新流程的菜单栏出口（SPEC §24，已完成 + 真机端到端）**。用户从菜单栏点
+      「下载并安装」后装完没反馈——`readyToRelaunch` 只在「关于」页有按钮，菜单栏完全不显示，
+      且 `dismiss()` 能把它打回 idle，等于弄丢唯一的重启入口。修 D27（菜单栏补三个状态分支）+
+      D28（dismiss 对 readyToRelaunch 为 no-op，该分支不给「稍后再说」）。
+      harness 二十段 → 二十一段，`PASS=23 FAIL=0`；变异验证三项（删守卫 / 守卫顺序错 / 加回按钮）全抓到。
+      两个断言坑已写进 SPEC：S32 必须在 `dismiss()` 函数体内比顺序，全文搜 `phase = .idle`
+      会先命中 `cancel()` 那一处导致永远红；S33 判「不含稍后再说」前必须剥注释，解释「为什么不提供」
+      的注释里本身就含这四个字。另外 `/bin/awk` 在这台机器上不存在，只能用 `/usr/bin/awk`。
+      **真机端到端**：降到 1.4.0 后用编译进去的真实 Updater 驱动完整链路，phase 序列实测
+      `checking → updateFound(1.4.1) → downloading(0→98%) → installing → readyToRelaunch(1.4.1)`，
+      同进程内 `dismiss()` 前后 phase 不变（no-op 实测）。链路自己把 /Applications 装成了 1.4.1。
+      本轮同样**尚未发 Release**（版本仍 1.4.1）。
 
 ### 历史轮次要点（避免重复踩坑）
 

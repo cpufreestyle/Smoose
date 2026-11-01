@@ -298,6 +298,10 @@ final class Updater: ObservableObject {
     /// 这样下次启动的静默检查仍能再次提示（不会因为关掉一次就永远不提示）。
     func dismiss() {
         guard !phase.isBusy else { return }
+        // readyToRelaunch 不能 dismiss：新版本已经替换到 /Applications 了，
+        // 回到 idle 会让「重启后生效」这条出口彻底消失，用户只能手动重启 App
+        // （甚至不知道有新版在等他）。这个状态要么重启、要么一直挂着。
+        if case .readyToRelaunch = phase { return }
         phase = .idle
     }
 

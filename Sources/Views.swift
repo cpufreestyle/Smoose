@@ -82,6 +82,55 @@ struct MenuBarPanel: View {
                 }
                 Divider()
             }
+            // 下载 / 安装 / 待重启也必须出现在菜单栏：用户是从这里点「下载并安装」的，
+            // 装完却没有任何反馈的话，他只会以为点了没反应 —— 此前 readyToRelaunch
+            // 只在「关于」页有出口，从菜单栏发起的更新得自己想起来去设置里重启。
+            switch updater.phase {
+            case .downloading(let p):
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: max(0, min(1, p)))
+                    Text("正在下载 v\(updater.available?.version ?? "")… \(Int(max(0, min(1, p)) * 100))%")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Divider()
+            case .installing:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在安装，请勿退出 Smoose…")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Divider()
+            case .readyToRelaunch(let v):
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("v\(v) 已就绪，重启后生效", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.system(size: 12, weight: .medium))
+                    if updater.needsReauthorizationNotice {
+                        HStack(alignment: .top, spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("签名证书有变化，重启后可能要重新授予辅助功能权限。")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack(spacing: 6) {
+                        Button("立即重启") { updater.relaunch() }
+                            .controlSize(.small)
+                        // 不提供「稍后再说」：新版本已经落盘，收起横幅就没有重启入口了
+                        // （dismiss() 对 readyToRelaunch 是 no-op）。要么现在重启，
+                        // 要么横幅一直挂在菜单栏顶部当提醒。
+                        Button("去设置页") {
+                            if let d = NSApp.delegate as? AppDelegate {
+                                d.openSettingsWindowForAnchor()
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                Divider()
+            default:
+                EmptyView()
+            }
             Toggle("忽略触控板 / Magic Mouse", isOn: $prefs.ignoreTrackpad)
             Text("最近一次滚动来源：\(monitor.sourceName)，原始 Δ \(String(format: "%.1f", monitor.rawDelta))")
                 .font(.system(size: 11))
