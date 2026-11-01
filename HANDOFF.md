@@ -499,6 +499,12 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   未命中 App 仍回落全局。由 S21-S24 断言守住。
 - ~~加速滑条上限与引擎上限不同源~~ **2026-11-01 已修（D23）**：滑条从写死 `1.2...6` 改为
   `1.2...ScrollBoost.maxScale`，消除「拖不到上限」与「界面 6.0 实际 8.0」的读写不一致。由 S25-S27 守住。
+- ~~罗技 HID++ 每 5 秒全量轮询~~ **2026-11-01 已改事件驱动（D24）**：注册 matching / removal 两个 IOHID 回调，
+  `Unmanaged` 把 self 传进去。顺带修掉一个体验问题：插上鼠标最多等 5 秒界面才反映。由 S30 守住。
+- ~~指针配置要等最多 6 秒才生效~~ **2026-11-01 已改事件驱动（D25）**：`persist()` 比对指针配置签名，
+  真变了才发 `.smoosePointerConfigChanged`；兜底轮询拉长到 60 秒且只在接管加速度时才跑。由 S31 守住。
+- ~~加速键与透传键同键时无提示~~ **2026-11-01 已加界面警告（D26）**：`ScrollBoost.conflicts(bypass:boost:)`
+  纯函数 + 「按住加速」段橙色提示。引擎行为本来就是对的（透传优先），补的是可发现性。由 S28/S29 守住。
 - ~~`teamMismatch` 无自动载体~~ **2026-10-28 已解决（H25）**：用「改期望值」而不是「造假包」拿到载体 ——
   把测试二进制包进带 `SmooseUpdateTeamID` 的 `.app`，官方包就会撞上 teamMismatch。`verifySignature` 的
   三条拒因分支（ad-hoc → `notSigned`、篡改 → `signatureInvalid`、他人 Team → `teamMismatch`）现在都有断言。
@@ -579,6 +585,15 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
       `codesign --verify --deep --strict` 通过、TeamIdentifier `6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留）
       → clone 副本提交 `3f0c946` 并推送 main。**尚未发 Release**（改动是配置层修复，未抬版本号）；
       若要发版需先把 `Resources/Info.plist` 抬到 1.4.1 再跑 `scripts/release.sh --github`。
+
+- [x] **2026-11-01 第十一轮：轮询改事件驱动 + 同键冲突提示（SPEC §23，已完成）**。清单里剩下的 P2/P3 三项全做完：
+      D24 罗技 HID++ 5 秒轮询 → IOHID matching/removal 回调；D25 指针配置 6 秒轮询 → persist 签名比对 + 通知，
+      兜底拉长到 60 秒；D26 加速键与透传键同键时界面橙色警告（`ScrollBoost.conflicts`）。
+      harness 十六段 → 二十段（S28 编译真 ScrollAxis / S29-S31 文本守卫），`PASS=20 FAIL=0`。
+      变异验证：`conflicts` 恒 false → S28e/f 红；删 removal 回调 → S30b 红；删发通知块 → S31b/e 红；
+      兜底改回 6.0 → S31g 红。
+      ⚠️ 过程里删掉过一个 `setObserving(_:)` 半成品（`isObserving` 只写不读、没人调用）——不留死代码。
+      本轮同样**尚未发 Release**（版本仍 1.4.0）。
 
 ### 历史轮次要点（避免重复踩坑）
 

@@ -20,7 +20,11 @@ public final class LogitechHIDPP: ObservableObject {
     @Published public private(set) var statusMessage: String = "未连接罗技设备"
 
     private var hidManager: IOHIDManager?
-    private var pollTimer: Timer?
+    /// 设备插拔回调（IOHIDManager 事件驱动，替代原来的 5 秒全量轮询）。
+    /// 类型是闭包而不是 C 函数指针：IOHIDManagerRegisterDeviceMatchingCallback 的
+    /// 最后一格就是 UnsafeMutableRawPointer?，可以用 `Unmanaged` 把 self 传过去。
+    private var matchCallback: IOHIDDeviceCallback?
+    private var removalCallback: IOHIDDeviceCallback?
 
     private static let logitechVendorID = 0x046D
     private static let featureRootID: UInt16 = 0x0000
@@ -38,10 +42,24 @@ public final class LogitechHIDPP: ObservableObject {
         self.hidManager = manager
 
         scan()
-        // 定时轮询设备插拔
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.scan()
+        // 事件驱动插拔检测：插上 / 拔掉罗技外设时由 IOKit 直接回调。
+        // 原来是 5 秒一次全量 scan()，G502 X 常插在机器上就是持续的 IOKit 枚举开销；
+        // 而且插上鼠标到界面反映出来最多要等 5 秒，体感像「没检测到」。
+        let box = Unmanaged.passRetained(self).toOpaque()
+        // IOHIDDeviceCallback 是 4 参 (context, result, device, sender)：中间那个 IOReturn
+        // 是 IOKit 的结果码，这里不关心；device/sender 都用不上，scan() 自己重新枚举。
+        matchCallback = { ctx, _, _, _ in
+            guard let ctx else { return }
+            Unmanaged<LogitechHIDPP>.fromOpaque(ctx).takeUnretainedValue().scan()
         }
+        removalCallback = { ctx, _, _, _ in
+            guard let ctx else { return }
+            Unmanaged<LogitechHIDPP>.fromOpaque(ctx).takeUnretainedValue().scan()
+        }
+        IOHIDManagerRegisterDeviceMatchingCallback(manager, matchCallback!, box)
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, removalCallback!, box)
+        // 不调用 IOHIDManagerScheduleWithRunLoop：回调本来就跑在自己的队列上，
+        // 再挂主 run loop 会让 scan() 与 UI 刷新抢同一线程（scan 内部已 DispatchQueue.main.async）。
     }
 
     public func scan() {

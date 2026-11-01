@@ -107,6 +107,9 @@ boostModifiers/boostFactor 且覆盖 speed；「跳过此 App」仍 enabled=fals
 | H29–H30 | 签名身份 Authority 变化检测 | 提取证书 CN / ad-hoc 为空 / 提示重新授权 |
 | S18–S24 | 编译**真实** `Sources/Model.swift`：预设保留加速键 / 聊天 App 建议档 | 套预设清掉 boost、白名单漏 App、建议档反而更快 |
 | S25–S27 | 文本守卫 `Views.swift` ↔ `ScrollBoost.maxScale` 同源 | 滑条写死上限、引擎上限被改成 0 / NaN |
+| S28–S29 | 编译真 `Sources/ScrollAxis.swift` 验键位冲突判定 + Views 接线 | 加速键与透传键同键时无提示 |
+| S30 | 文本守卫 `LogitechHIDPP` 事件驱动 | 回到 5 秒轮询、漏注册 removal、Unmanaged 引用泄漏 |
+| S31 | 文本守卫 `PointerController` / `Model.swift` 配置通知 | 通知没真发、签名没判空、兜底轮询退回过短 |
 
 用法：
     ./run_tests.sh             # A B C D E F F2 G G2 G2b G2c G3 H（离线）
@@ -520,3 +523,31 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 `PointerController` 两个单例补空实现 stub，不碰持久化），S25-S27 文本守卫 Views ↔ maxScale。
 已做变异验证：把 `preset(named:)` 的 boost 保留两行删掉、白名单去掉微信、
 滑条改回 `1.2...6`，分别如预期报 FAIL（S18a/S18b/S19b/S21、S25a/S25b），恢复后全绿。
+
+## 23. 轮询改事件驱动（2026-11-01）
+
+两处定时器原本是「每 N 秒全量重跑一遍」，但设备列表在会话内几乎不变，
+绝大多数调用都是白跑一次 IOKit 枚举 + 主线程 apply。G502 X 常插在机器上时尤其明显。
+
+- **D24 罗技 HID++ 插拔检测**：`LogitechHIDPP` 原来是 5 秒 `scan()` 全量轮询，
+  持续 IOKit 开销之外还有个体验问题——插上鼠标最多要等 5 秒界面才反映，看着像「没检测到」。
+  改为 `IOHIDManagerRegisterDeviceMatchingCallback` / `RegisterDeviceRemovalCallback` 事件驱动，
+  用 `Unmanaged.passRetained(self).toOpaque()` 把 self 传进回调。
+  不挂 run loop：回调本就跑在自己的队列上，`scan()` 内部已 `DispatchQueue.main.async`。
+- **D25 指针配置生效延迟**：`PointerController` 原来是 6 秒 `refresh(force: false)`。
+  这个轮询唯一真正有用的场景是「用户刚改完配置」，却要等最多 6 秒才套用。
+  改为：`Preferences.persist()` 里比对指针配置签名（`pointerAccelManaged|accelerationValue|includeBuiltIn`），
+  真的变了才发 `.smoosePointerConfigChanged`，PointerController 收到立刻 refresh；
+  兜底轮询拉长到 60 秒且只在 `pointerAccelManaged` 为真时才跑（没接管时 `apply()` 第一行就 return）。
+  签名判空是必须的：不判空的话每次 persist（哪怕改的是滚动参数）都重发通知，等于又变回轮询。
+- **D26 加速键与透传键配同一个键时无提示**：引擎里 bypass 先判、boost 后判，
+  同键时透传赢，加速永远不触发——这是确定行为不是 bug，但界面两处各配各的，
+  用户配完不知道自己白配了。新增 `ScrollBoost.conflicts(bypass:boost:)` 纯函数，
+  「按住加速」段里检测到重叠时把说明文字换成橙色警告 Label。空掩码不算冲突（两边都没配是正常状态）。
+
+**断言**：S28 编译真 `Sources/ScrollAxis.swift` 验冲突判定（含「都没配」「只配一边」「不同键」都不提示）；
+S29 文本守卫 Views 真的接了 `ScrollBoost.conflicts`；
+S30 文本守卫罗技侧无 `scheduledTimer(5.0)` / 无 `pollTimer` / 两个回调都注册 / `passRetained` 与
+`takeUnretainedValue` 配平；S31 文本守卫通知真的发（不是只定义）、签名判空在、兜底 ≥ 30 秒。
+变异验证：`conflicts` 恒返 false → S28e/S28f 红；删 removal 回调 → S30b 红；
+删 persist 里的发通知块 → S31b/S31e 红；兜底改回 6.0 → S31g 红。

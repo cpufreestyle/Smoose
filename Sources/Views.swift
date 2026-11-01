@@ -240,10 +240,16 @@ struct GeneralTab: View {
                 LabeledSlider(title: "加速倍数", value: $prefs.global.boostFactor,
                               range: 1.2...ScrollBoost.maxScale, unit: "×",
                               help: "按住上面的键时，距离倍率再乘这个数；松开立刻恢复")
-                Text("滚长文档 / 长网页时按住加速键，平时仍保持温和手感。"
-                     + "与「按住透传」配同一个键时，以透传为准。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Text("滚长文档 / 长网页时按住加速键，平时仍保持温和手感。")
+                if ScrollBoost.conflicts(bypass: prefs.global.bypassModifiers,
+                                         boost: prefs.global.boostModifiers) {
+                    // 配了同一个键：引擎里 bypass 先判，加速永远不会触发。
+                    // 之前只有一句静态文案「以透传为准」，用户配完根本不知道自己白配了。
+                    Label("加速键与上面的「按住透传」重复，加速不会生效（同一键时透传优先）。"
+                          + "请给其中一项换个键。", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                }
             }
             Section("预设") {
                 HStack {

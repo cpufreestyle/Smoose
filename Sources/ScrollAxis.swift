@@ -11,6 +11,18 @@ struct ScrollBoost {
     /// 否则用户把滑条拖到底也够不到这个上限，两边数字对不上。
     static let maxScale: Double = 10.0
 
+    /// 「按住加速」与「按住透传」是否配了同一个键。
+    ///
+    /// 两者都挂在滚轮事件的自带 flags 上，引擎里 bypass 先判、boost 后判，
+    /// 所以同一个键的行为是确定的（透传赢，加速永远不触发）—— 这不是 bug。
+    /// 但界面上两处各配各的，用户配完完全不知道「我加的加速白加了」，
+    /// 所以要有个纯函数让 UI 能把这一行标红并说清楚谁赢。
+    /// 空掩码不算冲突：两边都没配键是正常状态。
+    static func conflicts(bypass: UInt64, boost: UInt64) -> Bool {
+        guard bypass != 0, boost != 0 else { return false }
+        return (bypass & boost) != 0
+    }
+
     static func scale(enabled: Bool, modifiers: UInt64, factor: Double, eventFlags: UInt64) -> Double {
         // 必须是「配置的键全都按住」才算命中。用 != 0 是「任意命中」语义，
         // 配了 ⌘+⌥ 时只按 ⌘ 就会误触发加速（S5b 断言抓到）。

@@ -741,6 +741,84 @@ fi
 /bin/echo "$(cat "$VIEWS_SRC")" | /usr/bin/grep -Eq '加速倍数.*range: [0-9]' && S25FAILS="$S25FAILS S27a"
 if [ -z "$S25FAILS" ]; then ok "S25-S27 滑条上限与 maxScale 同源"; else bad "S25-S27$S25FAILS"; fi
 
+echo "== S28-S32: 加速/透传键冲突提示 + 罗技事件驱动 + 指针配置通知（2026-11-01）=="
+# S28-S29 冲突提示：引擎里 bypass 先判、boost 后判，同键时透传赢是确定行为（不是 bug），
+# 但界面上两处各配各的，用户配完不知道自己白配了。UI 必须能识别并提示。
+S28DIR="$WORK/s28dir"
+/bin/mkdir -p "$S28DIR"
+/bin/cat > "$S28DIR/main.swift" <<'S28SWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+
+let cmd: UInt64 = 1 << 20   // CGEventFlags.maskCommand
+let opt: UInt64 = 1 << 19   // CGEventFlags.maskAlternate
+let shift: UInt64 = 1 << 17 // CGEventFlags.maskShift
+
+// S28a 两边都没配键 → 不提示（正常状态不能弹警告）
+require(!ScrollBoost.conflicts(bypass: 0, boost: 0), "S28a 都没配不算冲突")
+// S28b 只配了一边 → 不提示
+require(!ScrollBoost.conflicts(bypass: cmd, boost: 0), "S28b 只配透传不算冲突")
+require(!ScrollBoost.conflicts(bypass: 0, boost: cmd), "S28c 只配加速不算冲突")
+// S28d 配了不同的键 → 不提示
+require(!ScrollBoost.conflicts(bypass: cmd, boost: opt), "S28d 不同键不算冲突")
+// S28e 同一个键 → 必须提示（这正是「加速白配了」的场景）
+require(ScrollBoost.conflicts(bypass: cmd, boost: cmd), "S28e 同键必须报冲突")
+// S28f 配了多个键、其中有重叠 → 也要提示（⌘ vs ⌘+⇧）
+require(ScrollBoost.conflicts(bypass: cmd, boost: cmd | shift), "S28f 部分重叠也算冲突")
+
+if failures == 0 { print("S28-OK") } else { exit(1) }
+S28SWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -framework CoreGraphics -o "$WORK/s28" Sources/ScrollAxis.swift "$S28DIR/main.swift" 2>"$WORK/s28.log"; then
+  if "$WORK/s28" >/dev/null; then ok "S28 键位冲突判定（6 项）"; else bad "S28 $("$WORK/s28" 2>&1 | grep '^FAIL' | tr '\n' ' ')"; fi
+else
+  bad "S28 编译失败$(tail -3 "$WORK/s28.log")"
+fi
+
+# S29 界面真的接了冲突提示（否则纯函数没人用，等于没做）
+S29FAILS=""
+/bin/echo "$(cat "$ROOT/Sources/Views.swift")" | /usr/bin/grep -q 'ScrollBoost.conflicts(bypass:' || S29FAILS="$S29FAILS S29a"
+/bin/echo "$(cat "$ROOT/Sources/Views.swift")" | /usr/bin/grep -q '透传优先' || S29FAILS="$S29FAILS S29b"
+if [ -z "$S29FAILS" ]; then ok "S29 UI 冲突提示接线"; else bad "S29$S29FAILS"; fi
+
+# S30-S31 罗技 HID++ 从轮询改事件驱动：不能再有 5 秒全量 scan，
+# 必须注册 matching / removal 两个回调，且不能把自己泄漏（Unmanaged 往返要配平）。
+HIDPP_SRC="$ROOT/Sources/LogitechHIDPP.swift"
+S30FAILS=""
+/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -q 'IOHIDManagerRegisterDeviceMatchingCallback' || S30FAILS="$S30FAILS S30a"
+/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -q 'IOHIDManagerRegisterDeviceRemovalCallback' || S30FAILS="$S30FAILS S30b"
+/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -q 'scheduledTimer(withTimeInterval: 5.0' && S30FAILS="$S30FAILS S30c"
+/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -q 'pollTimer' && S30FAILS="$S30FAILS S30d"
+# passRetained 必须成对：只有 fromOpaque(takeUnretainedValue) 说明每次回调 +1 永不平衡，
+# 长期运行会泄漏。takeRetainedValue 才是把那次 retain 交还给回调消费。
+/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -q 'passRetained(self).toOpaque()' || S30FAILS="$S30FAILS S30e"
+/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -q 'takeUnretainedValue().scan()' || S30FAILS="$S30FAILS S30f"
+# 回调签名是 4 参（context, result, device, sender）：写成 3 参编译不过，
+# 但写成 { ctx, _, _ in } 这种「用不上的参数名」会让人以为少了一参。这里只数逗号。
+CBN="$(/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -c 'matchCallback = { ctx')"
+if [ "$CBN" != "1" ]; then S30FAILS="$S30FAILS S30g"; fi
+if [ -z "$S30FAILS" ]; then ok "S30 罗技 HID++ 事件驱动（无轮询 / 回调注册 / 引用配平）"; else bad "S30$S30FAILS"; fi
+
+# S31 指针配置通知：persist() 必须真的发通知，否则 60 秒兜底才生效，
+# 用户拖滑条要等一分钟—— 这就是原来 6 秒轮询唯一有用的场景，不能退化成没有。
+PC_SRC="$ROOT/Sources/PointerController.swift"
+MD_SRC="$ROOT/Sources/Model.swift"
+S31FAILS=""
+/bin/echo "$(cat "$MD_SRC")" | /usr/bin/grep -q 'smoosePointerConfigChanged' || S31FAILS="$S31FAILS S31a"
+/bin/echo "$(cat "$MD_SRC")" | /usr/bin/grep -q 'post(name: .smoosePointerConfigChanged' || S31FAILS="$S31FAILS S31b"
+/bin/echo "$(cat "$MD_SRC")" | /usr/bin/grep -q 'lastPersistedPointerSignature' || S31FAILS="$S31FAILS S31c"
+/bin/echo "$(cat "$PC_SRC")" | /usr/bin/grep -q 'addObserver(forName: .smoosePointerConfigChanged' || S31FAILS="$S31FAILS S31d"
+# 签名判空必须有：没判空的话每次 persist（哪怕改的是滚动参数）都会重发通知 → 又变回轮询
+/bin/echo "$(cat "$MD_SRC")" | /usr/bin/grep -q 'pointerSig != lastPersistedPointerSignature' || S31FAILS="$S31FAILS S31e"
+# 兜底轮询必须从 6 秒拉长（否则事件驱动白做）
+POLLSEC="$(/bin/echo "$(cat "$PC_SRC")" | /usr/bin/sed -nE 's/.*scheduledTimer\(withTimeInterval: ([0-9.]+).*/\1/p')"
+if [ -z "$POLLSEC" ]; then S31FAILS="$S31FAILS S31f"; fi
+if [ -n "$POLLSEC" ]; then
+  /usr/bin/awk -v v="$POLLSEC" 'BEGIN { exit !(v+0 >= 30.0) }' || S31FAILS="$S31FAILS S31g"
+fi
+if [ -z "$S31FAILS" ]; then ok "S31 指针配置事件驱动（通知 / 签名判空 / 兜底拉长）"; else bad "S31$S31FAILS"; fi
+
 echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
 # 2026-10-26 加的安全加固此前一条 harness 都没有（run_tests.sh 还停在 10-23），
 # 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。

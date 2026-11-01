@@ -31,6 +31,9 @@ final class PointerController: ObservableObject {
     @Published private(set) var lastWriteOk: Bool = true
 
     private let hidClient = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+    /// 兜底轮询。原来是固定 6 秒全量 refresh()，但设备列表在会话内几乎不变，
+    /// 于是绝大多数 refresh 都白跑一次 IOKit 枚举 + 主线程 apply。改为 60 秒兜底，
+    /// 「改完配置马上生效」改由 persist() 发的通知驱动（见 start()）。
     private var pollTimer: Timer?
 
     private static let accelTypeKey = "HIDPointerAccelerationType"
@@ -43,7 +46,16 @@ final class PointerController: ObservableObject {
 
     func start() {
         refresh(force: true)
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 6.0, repeats: true) { [weak self] _ in
+        // 兜底轮询：60 秒一次。只在「已接管加速度」时才有意义
+        //（没接管时 apply() 第一行就 return，刷新纯属浪费）。
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            guard let self, Preferences.shared.pointerAccelManaged else { return }
+            self.refresh(force: false)
+        }
+        // 配置变更 → 立刻重新套用。用户拖「加速度数值」滑条时不再等下一个轮询周期，
+        // 这是原来 6 秒轮询唯一真正有用的场景，现在改成事件驱动。
+        NotificationCenter.default.addObserver(forName: .smoosePointerConfigChanged, object: nil,
+                                               queue: .main) { [weak self] _ in
             self?.refresh(force: false)
         }
     }

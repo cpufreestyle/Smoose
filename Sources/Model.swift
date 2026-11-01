@@ -1,6 +1,12 @@
 import Foundation
 import Combine
 
+/// 指针配置变更通知。PointerController 原来靠 6 秒轮询才发现配置变了，
+/// 现在由持久化路径主动发通知，事件驱动地重新套用。
+extension Notification.Name {
+    static let smoosePointerConfigChanged = Notification.Name("smoose.pointerConfigChanged")
+}
+
 // MARK: - 滚动参数档
 
 struct ScrollProfile: Codable, Equatable {
@@ -329,9 +335,19 @@ final class Preferences: ObservableObject {
         let s = stored
         ScrollEngine.shared.apply(s)
         PointerController.shared.apply(force: false)
+        // 指针配置真的变了 → 通知 PointerController 立刻重新枚举并套用，
+        // 不再等它的兜底轮询（用户拖滑条时要马上看到回读值变化）。
+        let pointerSig = "\(s.pointerAccelManaged)|\(s.pointerAccelerationValue)|\(s.pointerIncludeBuiltIn)"
+        if pointerSig != lastPersistedPointerSignature {
+            lastPersistedPointerSignature = pointerSig
+            NotificationCenter.default.post(name: .smoosePointerConfigChanged, object: nil)
+        }
         guard let data = try? JSONEncoder().encode(s) else { return }
         UserDefaults.standard.set(data, forKey: Self.key)
     }
+
+    /// 上一次落盘的指针配置签名，用于判断「这次 persist 是否真的改了指针相关字段」
+    private var lastPersistedPointerSignature: String?
 
     func resetGlobal() {
         global = ScrollProfile()
