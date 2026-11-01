@@ -235,7 +235,10 @@ struct GeneralTab: View {
                     mask: Binding(get: { prefs.global.boostModifiers },
                                  set: { prefs.global.boostModifiers = $0 })
                 )
-                LabeledSlider(title: "加速倍数", value: $prefs.global.boostFactor, range: 1.2...6, unit: "×",
+                // 上限必须取 ScrollBoost.maxScale：此前滑条写死 1.2...6，而引擎夹到 10，
+                // 于是滑条拖到底只到 6×，手改 JSON 到 8× 时界面显示 6.0 实际跑 8.0（读写不一致）。
+                LabeledSlider(title: "加速倍数", value: $prefs.global.boostFactor,
+                              range: 1.2...ScrollBoost.maxScale, unit: "×",
                               help: "按住上面的键时，距离倍率再乘这个数；松开立刻恢复")
                 Text("滚长文档 / 长网页时按住加速键，平时仍保持温和手感。"
                      + "与「按住透传」配同一个键时，以透传为准。")
@@ -246,7 +249,11 @@ struct GeneralTab: View {
                 HStack {
                     ForEach(Array(ScrollProfile.presets.keys.sorted()), id: \.self) { name in
                         Button(name) {
-                            if let p = ScrollProfile.presets[name] { prefs.global = p }
+                            // 保留用户自己配的加速键：预设只覆盖曲线参数
+                            if let p = ScrollProfile.preset(named: name,
+                                                            preservingBoostFrom: prefs.global) {
+                                prefs.global = p
+                            }
                         }
                     }
                     Spacer()
@@ -319,14 +326,16 @@ struct AppRulesTab: View {
                     ForEach(candidates, id: \.processIdentifier) { app in
                         Button(app.localizedName ?? app.bundleIdentifier ?? "?") {
                             if let id = app.bundleIdentifier, prefs.apps[id] == nil {
-                                prefs.apps[id] = prefs.global
+                                // 微信 / QQ / Slack 这类自带滚动惯性的 App：直接用「聊天软件」预设，
+                                // 不再「沿用全局」—— 用户 2026-10-31 反馈在微信里全局倍率叠上去会过快。
+                                prefs.apps[id] = ScrollProfile.suggested(forBundleID: id) ?? prefs.global
                             }
                         }
                     }
                     Divider()
                     Button("当前前台应用：\(active.name ?? "无")") {
                         if let id = active.bundleID, prefs.apps[id] == nil {
-                            prefs.apps[id] = prefs.global
+                            prefs.apps[id] = ScrollProfile.suggested(forBundleID: id) ?? prefs.global
                         }
                     }
                 } label: { Label("添加应用", systemImage: "plus") }

@@ -645,6 +645,102 @@ else
   bad "S 编译失败$(tail -3 "$WORK/s.log")"
 fi
 
+echo "== S18-S24: 预设保留加速键 / 聊天 App 建议档 / 滑条上限对齐（2026-11-01，编译真 Model.swift）=="
+# 背景（用户 2026-10-31 反馈的两条「配了却静默失效」）：
+# ① 点一次「浏览器」预设就把 prefs.global 整个换掉，用户在「按住加速」里配好的 ⌘+4×
+#    被清回默认（boostModifiers=0 → 加速整个失效），界面上没有任何提示；
+# ② 新建每应用规则一律「沿用全局」，微信里全局倍率叠上去直接「起飞」。
+# Model.swift 只依赖 Foundation + Combine，可以整编（给 Preferences 依赖的两个单例补 stub），
+# 所以这里断言的是真源码行为，不是 run_tests.sh 里抄的逻辑副本（G 段已经吃过副本漂移的亏）。
+MDIR="$(mktemp -d)"
+/bin/cat > "$MDIR/main.swift" <<'MSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+
+// Preferences.persist() 会调用这两个单例；断言里不碰持久化，给空实现即可。
+final class ScrollEngine { static let shared = ScrollEngine(); func apply(_ s: StoredState) {} }
+final class PointerController { static let shared = PointerController(); func apply(force: Bool) {} }
+
+let cmd = 1 << 20   // CGEventFlags.maskCommand 的位值（避免在 Model.swift 里引 CoreGraphics）
+
+// S18 套预设必须保留用户自己配的加速键（修饰键）
+var tuned = ScrollProfile()
+tuned.boostModifiers = UInt64(cmd)
+tuned.boostFactor = 4.0
+if let p = ScrollProfile.preset(named: "浏览器", preservingBoostFrom: tuned) {
+    require(p.boostModifiers == UInt64(cmd), "S18a 套预设后加速键还在")
+    require(p.boostFactor == 4.0, "S18b 套预设后加速倍率还在")
+    require(p.speed != tuned.speed, "S18c 曲线参数确实被预设覆盖（speed 4.0 vs 用户 3.2）")
+    require(p.enabled == true, "S18d 普通预设不得顺手关掉开关")
+} else {
+    require(false, "S18 预设名『浏览器』不存在")
+}
+
+// S19 「跳过此 App」这类特殊预设必须保留自己的 enabled=false，
+// 不能被「保留加速键」的逻辑顺手打开（否则用户以为配了跳过其实没跳过）
+if let skip = ScrollProfile.preset(named: "跳过此 App", preservingBoostFrom: tuned) {
+    require(skip.enabled == false, "S19a 跳过预设仍是关闭态")
+    require(skip.boostModifiers == UInt64(cmd), "S19b 跳过预设同样保留加速键")
+} else {
+    require(false, "S19 预设名『跳过此 App』不存在")
+}
+
+// S20 未知预设名返回 nil（调用方靠它决定「不换配置」而不是换成默认档）
+require(ScrollProfile.preset(named: "不存在的预设", preservingBoostFrom: tuned) == nil,
+        "S20 未知预设名返回 nil")
+
+// S21-S23 聊天软件白名单：微信 / QQ / Slack / Discord / Teams 命中「聊天软件」预设
+require(ScrollProfile.suggested(forBundleID: "com.tencent.xinWeChat")?.speed == 0.8,
+        "S21 微信命中聊天预设")
+require(ScrollProfile.suggested(forBundleID: "com.tinyspeck.slackmacgap")?.speed == 0.8,
+        "S22 Slack 命中聊天预设")
+require(ScrollProfile.suggested(forBundleID: "com.hnc.Discord")?.speed == 0.8,
+        "S22b Discord 命中聊天预设")
+require(ScrollProfile.suggested(forBundleID: "com.microsoft.teams")?.speed == 0.8,
+        "S22c Teams 命中聊天预设")
+require(ScrollProfile.suggested(forBundleID: "com.tencent.qq")?.speed == 0.8,
+        "S22d QQ 命中聊天预设")
+// S23 非聊天 App 没有建议档，调用方回落「沿用全局」而不是被强行改手感
+require(ScrollProfile.suggested(forBundleID: "com.apple.Safari") == nil,
+        "S23 Safari 无建议档（回落全局）")
+require(ScrollProfile.suggested(forBundleID: "com.microsoft.VSCode") == nil,
+        "S23b VSCode 无建议档（回落全局）")
+// S23c 白名单里的 id 必须在 presets 表里真的存在，否则命中后拿到 nil 会静默回落
+require(ScrollProfile.presets["聊天软件"] != nil, "S23c 『聊天软件』预设必须存在")
+
+// S24 聊天预设必须是「降速」而不是「提速」：全局默认 3.2，聊天档必须更低，
+// 否则这条建议反而把微信做得更快（回归守卫）
+require(ScrollProfile.presets["聊天软件"]!.speed < ScrollProfile().speed,
+        "S24 聊天预设倍率必须低于全局默认")
+
+if failures == 0 { print("S-OK") } else { exit(1) }
+MSWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -o "$WORK/s18" Sources/Model.swift "$MDIR/main.swift" 2>"$WORK/s18.log"; then
+  if "$WORK/s18" >/dev/null; then ok "S18-S24 预设/建议档（12 项）"; else bad "S18-S24 $("$WORK/s18" 2>&1 | grep '^FAIL' | tr '\n' ' ')"; fi
+else
+  bad "S18-S24 编译失败$(tail -3 "$WORK/s18.log")"
+fi
+
+echo "== S25-S27: 加速滑条与引擎上限对齐（文本守卫，Views ↔ ScrollBoost）=="
+# 滑条上限写死 1.2...6 而 ScrollBoost.maxScale = 10 时：拖到底只到 6×，
+# 手改 JSON 到 8× 又出现「界面显示 6.0 实际跑 8.0」。两边必须同源。
+VIEWS_SRC="$ROOT/Sources/Views.swift"
+AXIS_SRC="$ROOT/Sources/ScrollAxis.swift"
+S25FAILS=""
+/bin/echo "$(cat "$VIEWS_SRC")" | /usr/bin/grep -q 'range: 1\.2\.\.\.ScrollBoost\.maxScale' || S25FAILS="$S25FAILS S25a"
+/bin/echo "$(cat "$VIEWS_SRC")" | /usr/bin/grep -q 'range: 1\.2\.\.\.6' && S25FAILS="$S25FAILS S25b"
+MAXSCALE_VAL="$(/bin/echo "$(cat "$AXIS_SRC")" | /usr/bin/sed -nE 's/.*static let maxScale: Double = ([0-9.]+).*/\1/p')"
+if [ -z "$MAXSCALE_VAL" ]; then S25FAILS="$S25FAILS S25c"; fi
+# S26 引擎上限必须是有限正数（0 或 NaN 会让加速倍率被夹成 1，功能静默失效）
+if [ -n "$MAXSCALE_VAL" ]; then
+  /usr/bin/awk -v v="$MAXSCALE_VAL" 'BEGIN { exit !(v+0 > 1.0 && v+0 < 1000.0) }' || S25FAILS="$S25FAILS S26a"
+fi
+# S27 Views 里不得再出现任何写死的加速倍率上限（防止下次有人复制旧写法）
+/bin/echo "$(cat "$VIEWS_SRC")" | /usr/bin/grep -Eq '加速倍数.*range: [0-9]' && S25FAILS="$S25FAILS S27a"
+if [ -z "$S25FAILS" ]; then ok "S25-S27 滑条上限与 maxScale 同源"; else bad "S25-S27$S25FAILS"; fi
+
 echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
 # 2026-10-26 加的安全加固此前一条 harness 都没有（run_tests.sh 还停在 10-23），
 # 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。

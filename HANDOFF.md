@@ -174,7 +174,7 @@ App 持有**辅助功能权限**（能监听并合成全局输入），所以「
 | 每格行数 `wheelLines` | 只作用于离散滚轮鼠标，不作用于连续滚动 |
 | 双轴独立 | 垂直 / 水平各自独立开关平滑与方向反转 |
 | 忽略触控板 | 触控板 / Magic Mouse 的连续滚动默认原样透传（启发式判定，见 §4.4） |
-| 每应用配置 | 按 bundle id 单独配置，或一键套预设 |
+| 每应用配置 | 按 bundle id 单独配置，或一键套预设；新建规则时聊天类 App 自动套「聊天软件」档（`chatBundleIDs` 白名单） |
 | 修饰键透传 | 按住 ⌘⌥⌃⇧ 等掩码时跳过接管、原样透传（精确操作场景） |
 | 按键绑定 | 中键与侧键 3/4/5 → 调度中心 / 启动台 / ⌘⇥ / 显示桌面 / 浏览器前后 / 切换桌面 / 截图面板等；支持前后键互换、抬起时触发、按应用单独绑定、按键测试面板 |
 | 指针加速度 | 直接改写 IOHIDSystem HID 参数，等价于 LinearMouse 核心能力（0 = 线性） |
@@ -491,6 +491,14 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
 - **用户提过「Dock 继续」但症状不明（2026-10-31）**：已实测确认 Dock hover 放大、光标移开复位、无粘住都正常
   （10-19 的修复在 1.2.x 仍有效），当时配置 `pointerSpeedManaged=False`、`cursorZoomEnabled=False`。
   若用户再说 Dock 问题，先问清是哪种现象（放大失效 / 粘滞 / 图标不显示），别再盲改。
+- ~~套预设会清掉「按住加速」配置~~ **2026-11-01 已修（D21）**：`ScrollProfile.preset(named:preservingBoostFrom:)`
+  只覆盖曲线参数，boostModifiers / boostFactor 原样保留。此前点一次「浏览器」就把用户配好的 ⌘+4× 清回 0，
+  加速静默失效且无提示。由 S18-S20 断言守住。
+- ~~新建每应用规则一律「沿用全局」~~ **2026-11-01 已修（D22）**：微信 / QQ / Slack / Discord / Teams
+  命中 `chatBundleIDs` 白名单，直接套「聊天软件」预设（speed 0.8），解决用户 10-31 反馈的微信滚轮过快；
+  未命中 App 仍回落全局。由 S21-S24 断言守住。
+- ~~加速滑条上限与引擎上限不同源~~ **2026-11-01 已修（D23）**：滑条从写死 `1.2...6` 改为
+  `1.2...ScrollBoost.maxScale`，消除「拖不到上限」与「界面 6.0 实际 8.0」的读写不一致。由 S25-S27 守住。
 - ~~`teamMismatch` 无自动载体~~ **2026-10-28 已解决（H25）**：用「改期望值」而不是「造假包」拿到载体 ——
   把测试二进制包进带 `SmooseUpdateTeamID` 的 `.app`，官方包就会撞上 teamMismatch。`verifySignature` 的
   三条拒因分支（ad-hoc → `notSigned`、篡改 → `signatureInvalid`、他人 Team → `teamMismatch`）现在都有断言。
@@ -556,6 +564,18 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
       H25PRE 前置自检确认期望值真的被改掉了。
       反向 + 变异验证都做过：ad-hoc 假包 → FAIL（拒因是 notSigned 不是 teamMismatch）；
       把 `guard team == expected` 放宽 → FAIL（官方包竟然通过了）。H 段现为 25 条，`PASS=11 FAIL=0`。
+
+- [x] **2026-11-01 第十轮：加速配置与每应用建议档三条修复（SPEC §22，已完成）**。本轮只做「配了却静默失效」的配置层修复，
+      引擎判定逻辑（S1-S8）本身没错，错在配置被整体替换：
+      ① D21 套预设保留加速键（`preset(named:preservingBoostFrom:)`）；
+      ② D22 新建每应用规则按 `chatBundleIDs` 白名单套「聊天软件」预设（治微信滚轮过快）；
+      ③ D23 加速滑条上限与 `ScrollBoost.maxScale` 同源。
+      harness 从十四段扩到十六段：S18-S24 编译**真实** `Sources/Model.swift`（给 `Preferences` 依赖的
+      `ScrollEngine` / `PointerController` 两个单桩补空实现，不碰持久化），S25-S27 文本守卫 Views ↔ maxScale。
+      变异验证：删掉 boost 保留两行 + 白名单去掉微信 → S18a/S18b/S19b/S21 报红；滑条改回 `1.2...6` → S25a/S25b 报红；
+      恢复后 `PASS=16 FAIL=0`。
+      ⚠️ 本轮源码改动**尚未部署 / 尚未提交 / 尚未发版**——工作区 `Sources/` 与 clone 副本、`/Applications`、
+      `build/` 都还是 1.4.0 旧行为。接手后按 §6.1a 部署 + 走 clone 副本提交，别直接在工作区 `git init`。
 
 ### 历史轮次要点（避免重复踩坑）
 

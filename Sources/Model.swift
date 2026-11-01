@@ -83,6 +83,35 @@ struct ScrollProfile: Codable, Equatable {
                 "聊天软件": chat,
                 "跳过此 App": bypass]
     }()
+
+    /// 套用「预设」时保留用户自己配的加速键（修饰键 + 倍率）。
+    ///
+    /// 预设表只描述曲线参数（倍率 / 顺滑度 / 步长），不描述热键配置。此前点一次
+    /// 「浏览器」就把 `prefs.global` 整个换掉，用户在「按住加速」里配好的 ⌘ + 4×
+    /// 被静默清回默认值（boostModifiers=0 → 加速整个失效），而且没有任何提示。
+    static func preset(named name: String, preservingBoostFrom current: ScrollProfile) -> ScrollProfile? {
+        guard var p = presets[name] else { return nil }
+        p.boostModifiers = current.boostModifiers
+        p.boostFactor = current.boostFactor
+        return p
+    }
+
+    /// 自带滚动惯性的 App：全局倍率叠上去会「起飞」（用户 2026-10-31 反馈微信里滚轮过快）。
+    /// 新建每应用规则时直接套「聊天软件」预设，不用用户自己再去拖滑条。
+    static let chatBundleIDs: Set<String> = [
+        "com.tencent.xinWeChat",       // 微信
+        "com.tencent.qq",              // QQ
+        "com.tinyspeck.slackmacgap",   // Slack
+        "com.hnc.Discord",             // Discord
+        "com.microsoft.teams",         // Teams
+        "com.tinyspeck.slackmacgap",
+    ]
+
+    /// 新建每应用规则时的建议档位。返回 nil = 没有特定建议，调用方回落到「沿用全局」。
+    static func suggested(forBundleID id: String) -> ScrollProfile? {
+        guard chatBundleIDs.contains(id) else { return nil }
+        return presets["聊天软件"]
+    }
 }
 
 // MARK: - 鼠标按键动作

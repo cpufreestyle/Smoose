@@ -49,7 +49,22 @@
 
 **契约**：apps[bundleID] = profile 覆盖全局；预设一键套用。
 
+两条「配了却静默失效」的修复（2026-11-01，用户实测反馈）：
+
+1. **套用预设不得清掉加速键**：点「浏览器 / 干脆 / 丝滑」等预设时，只覆盖曲线参数
+   （speed / smoothness / minStep），用户自己在「按住加速」里配好的修饰键与倍率必须原样保留。
+   旧行为是 `prefs.global = p` 整体替换，`boostModifiers` 被清回 0 → 加速功能失效且无任何提示。
+   例外：「跳过此 App」预设的 `enabled=false` 必须保留（不能被保留逻辑顺手打开）。
+2. **新建每应用规则按白名单给建议档**：微信 / QQ / Slack / Discord / Teams（`ScrollProfile.chatBundleIDs`）
+   这类自带滚动惯性的 App，新建规则时直接套「聊天软件」预设（speed 0.8），
+   其余 App 没有建议档、回落「沿用全局」——不被强行改手感。
+
 **断言（harness §B）**：profile(for:) 命中 app 配置；masterEnabled=false 返回 nil。
+
+**断言（harness §S18-S24）**：`ScrollProfile.preset(named:preservingBoostFrom:)` 保留
+boostModifiers/boostFactor 且覆盖 speed；「跳过此 App」仍 enabled=false；未知预设名返回 nil；
+五个聊天 bundle id 全部命中「聊天软件」预设；Safari / VSCode 无建议档；
+聊天预设倍率必须低于全局默认（防「建议档反而更快」）。
 
 ## 5. 侧键绑定
 
@@ -90,6 +105,8 @@
 | H | 编译真实 `Sources/` 断言自动更新安全加固 | https 强制 / Team ID / sha256 / 拒 ad-hoc 回归 |
 | H26–H28 | `Updater.replaceApp(at:target:)` 回滚契约 | 替换成功 / 验签失败回滚 / 新包缺失回滚 |
 | H29–H30 | 签名身份 Authority 变化检测 | 提取证书 CN / ad-hoc 为空 / 提示重新授权 |
+| S18–S24 | 编译**真实** `Sources/Model.swift`：预设保留加速键 / 聊天 App 建议档 | 套预设清掉 boost、白名单漏 App、建议档反而更快 |
+| S25–S27 | 文本守卫 `Views.swift` ↔ `ScrollBoost.maxScale` 同源 | 滑条写死上限、引擎上限被改成 0 / NaN |
 
 用法：
     ./run_tests.sh             # A B C D E F F2 G G2 G2b G2c G3 H（离线）
@@ -481,3 +498,25 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 - `Views.swift`：`AboutTab` 版本号改为读 `Updater.currentVersion`（此前硬编码 `v1.0.0`，升级后「关于」页显示的是假版本）；新增「跳过此版本」按钮；`UpdateStatusView` 补 `skipped` case；`MenuBarPanel` 顶部加新版本横幅（静默检查的出口）。
 - `App.swift`：`AppDelegate.startUpdateChecker()` 挂 24h Timer + 启动 5 秒延迟首查；`applicationWillTerminate` 里 invalidate。
 - `Sources/Updater.swift`：`static func httpMessage(code:url:)` 把 HTTP 错误码翻成可操作中文话术，按「是否默认源」分流；`private static func terminateSelf()` 安全退出自己（`NSApp` 可选链 + `exit(0)` 兜底）。
+
+## 22. 加速键配置与每应用建议档修复（2026-11-01）
+
+用户实测反馈两条「配置了却静默失效」，根因都不在引擎而在配置层的整体替换语义：
+
+- **D21 套预设清掉加速键**：`Views.swift` 的预设按钮写 `prefs.global = ScrollProfile.presets[name]`，
+  把整个 profile 换掉。用户在「按住加速」里配好的 ⌘ + 4× 随 `boostModifiers` 一起被清回 0，
+  加速功能静默失效，界面没有任何提示——用户以为是自己没按对键。
+  修法：`ScrollProfile.preset(named:preservingBoostFrom:)` 只复制 boostModifiers / boostFactor，
+  其余走预设值。`ScrollBoost.scale()` 的判定逻辑本身没错（S1-S8 已覆盖），错的是配置被清空。
+- **D22 新建每应用规则一律「沿用全局」**：用户 2026-10-31 反馈「微信里面滚轮速度过快」，
+  而 Spec 早就有「聊天软件」预设（speed 0.8），只是新建规则时从不自动套用。
+  修法：`ScrollProfile.chatBundleIDs` 白名单 + `suggested(forBundleID:)`，
+  命中（微信 / QQ / Slack / Discord / Teams）直接套「聊天软件」预设，未命中返回 nil 回落全局。
+- **D23 滑条上限与引擎上限不同源**：`ScrollBoost.maxScale = 10.0` 而 UI 滑条写死 `1.2...6`。
+  两个后果：拖到底也只到 6×；手改 JSON 到 8× 时界面显示 6.0 实际跑 8.0（读写不一致）。
+  修法：滑条上限改为 `ScrollBoost.maxScale`，两边同源。
+
+**断言**：S18-S24 编译真 `Sources/Model.swift`（给 `Preferences` 依赖的 `ScrollEngine` /
+`PointerController` 两个单例补空实现 stub，不碰持久化），S25-S27 文本守卫 Views ↔ maxScale。
+已做变异验证：把 `preset(named:)` 的 boost 保留两行删掉、白名单去掉微信、
+滑条改回 `1.2...6`，分别如预期报 FAIL（S18a/S18b/S19b/S21、S25a/S25b），恢复后全绿。

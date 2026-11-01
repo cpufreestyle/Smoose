@@ -7,6 +7,8 @@ import Foundation
 /// 之所以读事件自带的 flags 而不是自己维护按键状态，是因为滚轮事件本身就携带
 /// 当前修饰键，省掉一个 flagsChanged 监听和它的状态同步问题。
 struct ScrollBoost {
+    /// 加速倍率上限。UI 滑条范围必须与它对齐（`Views.swift` 的 `LabeledSlider`），
+    /// 否则用户把滑条拖到底也够不到这个上限，两边数字对不上。
     static let maxScale: Double = 10.0
 
     static func scale(enabled: Bool, modifiers: UInt64, factor: Double, eventFlags: UInt64) -> Double {
