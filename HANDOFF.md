@@ -574,8 +574,11 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
       `ScrollEngine` / `PointerController` 两个单桩补空实现，不碰持久化），S25-S27 文本守卫 Views ↔ maxScale。
       变异验证：删掉 boost 保留两行 + 白名单去掉微信 → S18a/S18b/S19b/S21 报红；滑条改回 `1.2...6` → S25a/S25b 报红；
       恢复后 `PASS=16 FAIL=0`。
-      ⚠️ 本轮源码改动**尚未部署 / 尚未提交 / 尚未发版**——工作区 `Sources/` 与 clone 副本、`/Applications`、
-      `build/` 都还是 1.4.0 旧行为。接手后按 §6.1a 部署 + 走 clone 副本提交，别直接在工作区 `git init`。
+      已完成收口：`run_tests.sh` `PASS=16 FAIL=0` → `build.sh` 重新签名 → ditto 部署 `/Applications/Smoose.app`
+      （备份 `/Applications/Smoose-1.4.0-pre-141.app`，版本仍 1.4.0，二进制 sha256 `4184a719…75ec`，
+      `codesign --verify --deep --strict` 通过、TeamIdentifier `6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留）
+      → clone 副本提交 `3f0c946` 并推送 main。**尚未发 Release**（改动是配置层修复，未抬版本号）；
+      若要发版需先把 `Resources/Info.plist` 抬到 1.4.1 再跑 `scripts/release.sh --github`。
 
 ### 历史轮次要点（避免重复踩坑）
 
