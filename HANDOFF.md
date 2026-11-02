@@ -99,6 +99,10 @@
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
+> **2026-11-02 清理轮（workspace 瘦身）**：把 36 项冗余产物移到 `~/.Trash/smoose-cleanup-2026-11-02/`（含 `MANIFEST.txt`，逐条记录原路径 / 体积 / 理由，可整体拖回还原）。仓库 23M → 4.0M。
+> 归档内容：`dist/` 里 4 个旧预部署 `.app` + 9 个旧版 zip + 7 个旧 json、`/Applications` 里 9 个**未记载**的额外备份、桌面 5 个 `.MichaelClip.app.old.*` 隐藏副本 + `.DS_Store`、`/tmp/smoose_git_sync_140` 临时克隆；另 `rmdir` 了空的 `logs/`。
+> **上表记载的 5 项回滚备份链一个没动**（`-1.2.1-predeploy` / `-1.3.0-pre-140` / `-1.4.0-pre-141` / `-1.4.1-pre-deploy` / `-1.4.2-pre-deploy`），`dist/Smoose-1.4.2.zip` 保留（F 段需要）。清理后 harness 复跑 `PASS=23 FAIL=0`。
+> 未动：`~/Desktop/MichaelClip.app`（旧版 v2.2.0 实例，**当时正在运行**，PID 34021，bundle id `com.michaelqiu.clip` 与 Smoose 的 `app.smoose.macos` 不同）——要一并清掉需先退出该进程。
 ---
 
 ## 1.1 安全修复与缺陷修复（2026-10-26 只读审核后）
