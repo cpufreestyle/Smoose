@@ -91,7 +91,7 @@ struct ScrollProfile: Codable, Equatable {
     }()
 
     /// 套用「预设」时保留用户自己配的加速键（修饰键 + 倍率）。
-    ///
+/// 设置窗口的标签页，必须和 Views.swift 里 SettingsWindow 的 .tag 一一对应。
     /// 预设表只描述曲线参数（倍率 / 顺滑度 / 步长），不描述热键配置。此前点一次
     /// 「浏览器」就把 `prefs.global` 整个换掉，用户在「按住加速」里配好的 ⌘ + 4×
     /// 被静默清回默认值（boostModifiers=0 → 加速整个失效），而且没有任何提示。
@@ -253,10 +253,47 @@ struct StoredState: Codable {
 /// 设置窗口的导航状态：让菜单栏面板能一键跳到「每应用」并聚焦当前 App
 final class NavState: ObservableObject {
     static let shared = NavState()
-    /// 0 滚动 / 1 每应用 / 2 指针 / 3 按键 / 4 关于
+    /// 见 SettingsTab；这里存 rawValue 是为了和 TabView 的 .tag 直接对上
     @Published var selectedTab: Int = 0
     /// 需要聚焦（自动展开 + 高亮）的 bundle id
     @Published var focusAppID: String?
+}
+
+/// 设置窗口的标签页，必须和 Views.swift 里 SettingsWindow 的 .tag 一一对应。
+
+/// 存在的理由：URL `smoose://settings?tab=game` 能直达某一页。
+/// 预览、远程诊断、复现「用户点不到某页」都得靠它 —— 之前切页只能靠手点，
+/// 而 SwiftUI 托管视图的辅助树拿不到，AppleScript 点 tab 不可靠。
+enum SettingsTab: Int, CaseIterable {
+    case scroll = 0
+    case pointer = 1
+    case apps = 2
+    case keys = 3
+    case game = 4
+    case about = 5
+
+    var name: String {
+        switch self {
+        case .scroll: return "scroll"
+        case .pointer: return "pointer"
+        case .apps: return "apps"
+        case .keys: return "keys"
+        case .game: return "game"
+        case .about: return "about"
+        }
+    }
+
+    /// 从 URL query 里解析标签页。纯函数（不碰 UI），harness 直接断言。
+    /// 认 `tab=game` 与 `tab=4` 两种写法；认不出来返回 nil，调用方保持当前页。
+    /// 不抛错、不崩溃：URL 是外部输入，写错只当没写。
+    static func fromURL(_ url: String) -> SettingsTab? {
+        guard let r = url.range(of: "tab=") else { return nil }
+        let tail = url[r.upperBound...]
+        let name = String(tail.prefix { $0 != "&" && $0 != "#" && !$0.isWhitespace }).lowercased()
+        if name.isEmpty { return nil }
+        if let n = Int(name), let t = SettingsTab(rawValue: n) { return t }
+        return allCases.first { $0.name == name }
+    }
 }
 
 final class Preferences: ObservableObject {

@@ -584,3 +584,99 @@ S34 文本守卫「关于」页原有出口没被挤掉。
 链路跑完后 `/Applications/Smoose.app` 已被自动更新自己替换成 1.4.1（`CFBundleVersion` 8、
 `codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、Mach-O sha256
 `3458df6d…bd7a01f` 与发版产物一致），辅助功能授权 `auth_value=2` 保留。
+
+## 25. 鼠标游戏性能检测（2026-11-02）
+
+「游戏」tab：不新开 tap、不加轮询，全部采集挂在已有的两个回调上（ScrollEngine 的 CGEvent tap
+拦 mouseMoved / otherMouseDown/Up，CVDisplayLink 本来就在跑），所以对 Smoose 自身零额外系统开销。
+指标分四组：设备参数（IORegistry 实读）、实时指标（2 秒滚动窗口）、就绪度评级、建议。
+评级与建议是纯函数 `GameGrade`，UI 与 harness 共用同一份阈值，不会出现「界面显示良好、
+harness 按另一套数字判」的漂移。
+
+**测不到的不做**：实际传感器 DPI 存在鼠标内部配置文件里，macOS 读不到；HID++ 2.0 的 DPI 回读
+（`getFeatureInfo(0x2201)`）实测回读全是 0。所以 UI 明确写「这里不显示 DPI」并说明原因，
+不拿假数字糊弄。
+
+### 25.1 启动即崩：`1..<0` 运行时陷阱
+
+1.4.2 首次带这个功能上线，`open -a` 后进程立即退出、无任何输出，用户看到的就是
+「点桌面图标完全没反应」。崩溃报告 `EXC_BREAKPOINT / SIGTRAP`，backtrace 指向
+`GamePerfProbe.recompute()`：
+
+```swift
+for i in 1..<ptrTs.count          // ← ptrTs.count == 0 时构成 1..<0
+```
+
+Swift 的 `..<` 带前置断言 `lowerBound <= upperBound`，count 为 0 时直接陷阱。
+**触发条件就是默认状态**：启动后第一次 1 Hz tick 时用户还没动鼠标，指针环是空的。
+`latencyRing` / `frameRing` 那两处同样的循环同理（reset 后也会中）。
+
+修法：抽成 `GamePerfProbe.intervals(of:)`，对空数组 / 单元素数组短路，返回值已升序
+（`PerfStats.percentile` 要求输入有序）。**凡是「相邻元素差」的循环，空数组必须单独短路**，
+不能指望 `1..<count` 自己兜住。
+
+### 25.2 `CGEvent.timestamp` 时基不统一（交接文档那条是错的）
+
+修完崩溃后预览，发现三个指标同时不对：指针延迟恒显示 0、事件率被算成 19 Hz
+（实际 744 Hz）、2 秒窗口过滤整体失效（多久以前的事件都算「在窗口内」）。
+用临时诊断把环里的原始值打出来才定位：
+
+```
+now = 10502111232800          ← mach_absolute_time()，tick
+ptrOldest = 437583588201750   ← CGEvent.timestamp
+比值 = 41.6662 ≈ timebase 125/3
+```
+
+**`CGEvent.timestamp` 的时基不统一，HID 事件和注入事件不是一套**：
+
+| 来源 | 时基 | 实测 |
+|---|---|---|
+| 真实鼠标等 HID 设备事件 | mach tick | 回调内与 `mach_absolute_time()` 比值 1.0000，差 0.13~5.09 ms |
+| 经 `CGEvent.post(tap: .cghidEventTap)` 注入的事件 | **开机以来纳秒数** | 同刻 tick ≈ 1.05e13、纳秒 ≈ 4.38e14；按 `uptime` 5 天 1.6 小时反查完全吻合 |
+
+不归一化的后果：纳秒值永远大于 `now` → `MachClock.diff` 恒返回 0 → 窗口过滤全部放行、
+事件率被算小约 41.67 倍、指针延迟恒为 0。**三个症状是同一个根因**，
+单独修任何一个都只是把假数据换个样子。
+
+修法：`MachClock.normalize(_:now:)`，进来的一切时间戳都过它。判据用 `ts > now &* 8`
+（纳秒比 tick 大一个数量级以上；timebase 最小 1/1 时两者同值，判据不可能误触）。
+
+> 旧交接文档写的「`CGEvent.timestamp` 与 `mach_absolute_time()` 同时基，可直接相减算延迟」
+> **只对 HID 事件成立**。那条是用真实鼠标量出来的，换成注入事件就错。别据此跳过归一化。
+
+### 25.3 只认 IORegistry 的 ReportInterval
+
+`IOHIDServiceClientCopyProperty` 对 `ReportInterval` / `HIDReportInterval` /
+`HIDPointerResolution` 全部返回 nil，必须按 registryID 走
+`IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(rid))`
+（和 `PointerController.currentResolution` 同一条路）。
+实测：G502 X 接收器 1000 µs = 1000 Hz，内置触控板 8000 µs = 125 Hz。
+`HIDPointerResolution` 两个设备都是 26214400（400 DPI 常量），不是真实传感器 DPI。
+
+### 25.4 断言与变异验证
+
+H31–H41 编译真 `Sources/GamePerf.swift` + `Sources/Model.swift` 断言：
+分位数（空/单元素/端点/插值/越界夹紧）、事件环（容量下限/计数/环绕顺序/未环绕顺序/reset）、
+回报率换算（1000 µs→1000 Hz、8000 µs→125 Hz、0→「读不到」）、评级阈值五项边界、
+定级 0/1/2/3+ 项失败、建议全部分支、就绪度 rawValue+symbol 非空、
+`intervals(of:)` 空数组短路、**空数据 `recompute()` 必须跑完**、时基归一化、
+`SettingsTab.fromURL`。S35 文本守卫游戏页 tag / URL 直达 / 采样中 / 重置。
+
+变异验证 12 条，全部报红：删空数组守卫 → H 段二进制 SIGTRAP(rc=133)；
+percentile 空数组返回 -1 → H31a；`start = next` → H32l2；Hz 换算错 → H33a/b/c；
+阈值 500→100 → H34c；定级 1 项失败→竞技级 → H35d；采样建议返回空 → H36a/H39d；
+symbol 置空 → H37b；`fromURL` 返回 nil → H40b/d/e；tag 4→5 → S35c；
+去掉 URL 接线 → S35e；`normalize` 改恒等 → H41d/e/g/i。
+
+两条变异**没有**报红，都是变异本身写错了（语义等价），但其中一条暴露了真实盲区：
+`(next - n + capacity) % capacity` 改成 `next` 在全环绕用例下结果相同，
+因为那时 `next == n`。补了 H32l「未环绕（total < capacity）快照必须按写入顺序」后才抓住。
+**变异没报红时，先怀疑变异是等价的，别直接断言「断言有牙」。**
+
+### 25.5 harness 假绿：编译产物崩溃也算通过
+
+变异验证时发现：删掉空数组守卫后 harness 依然全绿。原因是 H/D 段只
+`grep '^FAIL'`，而 Swift 运行时陷阱打的是 `Fatal error: ...`（不以 FAIL 开头），
+二进制中途死掉时 `HFAILS` 为空 → 照常 `ok`。已修：两趟 H 和 D 都必须
+**退出码为 0 且打出完成标记（H-OK / D-OK）**，否则记 `H_EXIT(rc=…)` / `H_NOMARK`。
+凡是「跑编译产物 + 解析输出」的断言都要防这一手，不能只 grep 失败行。

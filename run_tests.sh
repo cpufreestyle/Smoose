@@ -338,9 +338,16 @@ DSWIFT
 # 把 D 的 case 404 改成「版本源返回 HTTP 404」后，屏幕打出三条 FAIL D10x 却仍报 PASS=8）。
 # 必须把 grep 结果先收进变量再判断，且 D 二进制自己有失败要 exit 1。
 if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -o "$WORK/d" "$WORK/d.swift" 2>"$WORK/d.log"; then
-  DFAILS="$("$WORK/d" 2>&1 | grep '^FAIL' || true)"
+  # 变异验证（2026-11-02）发现这里也有假绿：只看 grep '^FAIL'，二进制中途崩溃
+  # （Swift 运行时陷阱打的是 "Fatal error: ..."，不以 FAIL 开头）时 DFAILS 为空 → 照常 ok。
+  # 所以必须同时看退出码和完成标记。
+  DRC=0
+  DOUT="$("$WORK/d" 2>&1)" || DRC=$?
+  DFAILS="$(/bin/echo "$DOUT" | grep '^FAIL' || true)"
+  if [ "$DRC" != "0" ]; then DFAILS="$DFAILS D_EXIT(rc=$DRC 非零退出/崩溃，断言可能没跑完)"; fi
+  /bin/echo "$DOUT" | grep -q 'D-OK' || DFAILS="$DFAILS D_NOMARK(缺 D-OK 完成标记)"
 else
-  DFAILS="$(tail -3 "$WORK/d.log")"
+  DFAILS="编译失败$(tail -3 "$WORK/d.log")"
 fi
 if [ -z "$DFAILS" ]; then ok "D 版本比较 / 清单解析 / 系统门槛"; else bad "D $DFAILS"; fi
 echo "== E: 构建 =="
@@ -894,6 +901,29 @@ AB="$(/usr/bin/awk '/^struct UpdateStatusView/,/^}/' "$VIEWS_SRC")"
 /bin/echo "$AB" | /usr/bin/grep -q '跳过此版本' || S34FAILS="$S34FAILS S34c"
 if [ -z "$S34FAILS" ]; then ok "S34 关于页出口完整"; else bad "S34$S34FAILS"; fi
 
+echo "== S35: 游戏页标签 + URL 直达（2026-11-02）=="
+# 2026-11-02 预览「游戏」页时发现切页只能靠手点：SwiftUI 托管视图的辅助树拿不到，
+# AppleScript 点 tab 不可靠。所以加了 smoose://settings?tab=<name> 直达，
+# 并让 SettingsTab（H40 断言）成为唯一真源。这里守的是「枚举和界面没漂移」：
+# enum 改了 tag 而 TabView 没改，用户点开的就不是同一页。
+S35FAILS=""
+# 先剥注释：解释 tag 历史的注释里本身就含 ".tag(4)"，不剥会自我触发。
+VIEWSNC="$(/bin/echo "$(cat "$VIEWS_SRC")" | /usr/bin/sed -E 's://.*$::')"
+GPVIEW="$(/usr/bin/awk '/^struct GamePerfTab/,/^}$/' "$VIEWS_SRC")"
+/bin/echo "$VIEWSNC" | /usr/bin/grep -q 'GamePerfTab()' || S35FAILS="$S35FAILS S35a"
+/bin/echo "$VIEWSNC" | /usr/bin/grep -q 'Label("游戏"' || S35FAILS="$S35FAILS S35b"
+/bin/echo "$VIEWSNC" | /usr/bin/grep -qE 'GamePerfTab\(\)\.tabItem \{ Label\("游戏", systemImage: "gamecontroller"\) \}\.tag\(4\)' || S35FAILS="$S35FAILS S35c"
+# URL 处理器必须真的去解析 tab，否则 smoose://settings?tab=game 只会开窗、不切页
+APPNC="$(/bin/echo "$(cat "$ROOT/Sources/App.swift")" | /usr/bin/sed -E 's://.*$::')"
+/bin/echo "$APPNC" | /usr/bin/grep -q 'SettingsTab.fromURL(url)' || S35FAILS="$S35FAILS S35d"
+/bin/echo "$APPNC" | /usr/bin/grep -q 'NavState.shared.selectedTab = tab.rawValue' || S35FAILS="$S35FAILS S35e"
+# 游戏页必须真的展示「采样中」而不是把空数据渲染成评级（1.4.2 崩的就是这个时点）
+/bin/echo "$GPVIEW" | /usr/bin/grep -q 'probe.sampling' || S35FAILS="$S35FAILS S35f"
+/bin/echo "$GPVIEW" | /usr/bin/grep -q '正在采样' || S35FAILS="$S35FAILS S35g"
+# 重置按钮必须真的调 reset()，否则用户没法清掉上一局的样本
+/bin/echo "$GPVIEW" | /usr/bin/grep -q 'probe.reset()' || S35FAILS="$S35FAILS S35h"
+if [ -z "$S35FAILS" ]; then ok "S35 游戏页标签/URL 直达/采样中/重置（8 项）"; else bad "S35$S35FAILS"; fi
+
 echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
 # 2026-10-26 加的安全加固此前一条 harness 都没有（run_tests.sh 还停在 10-23），
 # 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。
@@ -1122,22 +1152,211 @@ if !pReal.isEmpty, fm2.fileExists(atPath: pReal) {
 let adhocAuth = Updater.signingAuthority(of: URL(fileURLWithPath: pAdhoc))
 require(adhocAuth == nil, "H30 ad-hoc 包不应解析出签名 Authority（实际=\(adhocAuth ?? "")）")
 
+// ---- H31-H40 游戏性能检测（Sources/GamePerf.swift + Model.swift，2026-11-02）----
+// 背景：1.4.2 首次带这个功能上线即「启动崩溃」—— recompute() 里
+//   for i in 1..<ptrTs.count
+// 在指针样本为 0 时（启动后第一次 1 Hz tick，用户还没动鼠标）构成 1..<0，
+// 触发 Swift 运行时陷阱 Range requires lowerBound <= upperBound，
+// 进程在主队列 drain 里直接死，用户看到的就是「双击图标完全没反应」。
+// 所以这里除了统计边界，还必须真的跑一遍空数据 recompute：一旦回归，harness 自己会死。
+// H31 分位数：空 / 单元素 / 端点 / 线性插值 / 越界夹紧
+require(PerfStats.percentile([], 0.5) == 0, "H31a 空数组分位数必须返回 0")
+require(PerfStats.percentile([7.0], 0.0) == 7.0, "H31b 单元素数组 p=0 必须是该元素")
+require(PerfStats.percentile([7.0], 1.0) == 7.0, "H31c 单元素数组 p=1 必须是该元素")
+let hFour: [Double] = [1, 2, 3, 4]
+require(PerfStats.percentile(hFour, 0) == 1, "H31d p=0 取最小值")
+require(PerfStats.percentile(hFour, 1) == 4, "H31e p=1 取最大值")
+require(abs(PerfStats.percentile(hFour, 0.5) - 2.5) < 1e-9, "H31f p=0.5 线性插值（[1,2,3,4] 应为 2.5）")
+require(abs(PerfStats.percentile([1,2,3,4,5], 0.99) - 4.96) < 1e-9, "H31g p=0.99 插值（应为 4.96）")
+require(PerfStats.percentile(hFour, -1) == 1, "H31h p<0 必须夹到最小值")
+require(PerfStats.percentile(hFour, 9) == 4, "H31i p>1 必须夹到最大值")
+require(PerfStats.mean([1,2,3]) == 2, "H31j mean 常规值")
+require(PerfStats.mean([]) == 0, "H31k mean 空数组必须返回 0（不能除零）")
+
+// H32 事件环：容量下限、计数、环绕顺序、载荷、total、reset
+var hTiny = EventRing(capacity: 0)
+require(hTiny.capacity >= 1, "H32a capacity 0 必须兜底成至少 1")
+hTiny.append(1, 0, 0); hTiny.append(2, 0, 0)
+require(hTiny.total == 2, "H32b total 必须记下全部 append（含被容量夹掉看不到的）")
+require(hTiny.count == hTiny.capacity, "H32c count 必须夹到容量（capacity 0 兜底成 1 时）")
+var hPartial = EventRing(capacity: 4)
+hPartial.append(1, 0, 0); hPartial.append(2, 0, 0)
+require(hPartial.total == 2 && hPartial.count == 2, "H32d 未满时 total == count")
+var hRing = EventRing(capacity: 3)
+for i in 1...5 { hRing.append(UInt64(i), Int32(i), 0) }
+require(hRing.total == 5, "H32e total 必须记下全部 append（含被覆盖的）")
+require(hRing.count == 3, "H32f count 必须夹到容量")
+let hSnap = hRing.snapshot()
+require(hSnap.count == 3, "H32g 快照长度不得超过容量")
+require(hSnap.map({ $0.0 }) == [3, 4, 5], "H32h 环绕后快照必须由旧到新（实际=\(hSnap.map({ $0.0 }))）")
+require(hSnap[0].1 == 3 && hSnap[2].1 == 5, "H32i 快照必须带上 a/b 载荷")
+hRing.reset()
+require(hRing.total == 0 && hRing.count == 0 && hRing.snapshot().isEmpty, "H32j reset 必须清空")
+let hFresh = EventRing(capacity: 4)
+require(hFresh.snapshot().isEmpty, "H32k 从未 append 的环快照必须为空")
+// H32l 未环绕（total < capacity）是另一条代码路径：此时 next == total == n，
+// start 必须是 0 而不是 next。变异验证（2026-11-02）发现原来的用例全是环绕后的，
+// 把 `(next - n + capacity) % capacity` 改成 `next` 照样全绿 —— 盲区在这。
+let hPartSnap = hPartial.snapshot()
+require(hPartSnap.count == 2, "H32l1 未环绕快照长度应为 2")
+require(hPartSnap.map({ $0.0 }) == [1, 2], "H32l2 未环绕时快照必须就是写入顺序（实际=\(hPartSnap.map({ $0.0 }))）")
+
+// H33 回报率换算。IORegistry 的 ReportInterval 是 µs：
+// 2026-11-02 实测 G502 X 接收器 1000 µs = 1000 Hz，内置触控板 8000 µs = 125 Hz。
+// 读不到（0）必须明确说「读不到」—— 显示 0 Hz 等于假装测过。
+let hG502 = GameDeviceInfo(id: 1, name: "G502 X", transport: "USB", builtIn: false, reportIntervalUs: 1000)
+require(abs(hG502.pollingHz - 1000) < 1e-9, "H33a 1000 µs 应换算成 1000 Hz")
+require(hG502.pollingLabel == "1000 Hz", "H33b pollingLabel 格式（实际=\(hG502.pollingLabel)）")
+let hPad = GameDeviceInfo(id: 2, name: "Trackpad", transport: "Built-in", builtIn: true, reportIntervalUs: 8000)
+require(abs(hPad.pollingHz - 125) < 1e-9, "H33c 8000 µs 应换算成 125 Hz")
+let hNone = GameDeviceInfo(id: 3, name: "X", transport: "", builtIn: false, reportIntervalUs: 0)
+require(hNone.pollingHz == 0, "H33d 间隔 0 时 Hz 必须为 0")
+require(hNone.pollingLabel == "读不到", "H33e 读不到必须显示「读不到」（实际=\(hNone.pollingLabel)）")
+
+// H34-H36 评级阈值 / 定级 / 建议。UI 与 harness 必须同源，否则会出现
+// 「界面显示良好、harness 按另一套数字判」的漂移。
+let hEdge = GameGrade.checks(pollingHz: 500, measuredHz: 500, jitterP99Ms: 2.0, latencyP99Ms: 0.001, frameDropRatio: 0.02)
+require(hEdge.count == 5, "H34a 检查项必须恰好 5 条")
+require(hEdge.allSatisfy({ $0.pass }), "H34b 全部踩在合格线上必须全过（实际=\(hEdge.filter({ !$0.pass }).map({ $0.label })))")
+require(!GameGrade.checks(pollingHz: 499, measuredHz: 500, jitterP99Ms: 2.0, latencyP99Ms: 1, frameDropRatio: 0.02)[0].pass, "H34c 回报率 499 Hz 必须不过")
+require(GameGrade.checks(pollingHz: 0, measuredHz: 0, jitterP99Ms: 0, latencyP99Ms: 0, frameDropRatio: 0)[1].pass == false, "H34d 无设备时达成率不得算通过")
+require(!GameGrade.checks(pollingHz: 1000, measuredHz: 499, jitterP99Ms: 0, latencyP99Ms: 0, frameDropRatio: 0)[1].pass, "H34e 达成率 49.9% 必须不过")
+require(GameGrade.checks(pollingHz: 1000, measuredHz: 500, jitterP99Ms: 0, latencyP99Ms: 0, frameDropRatio: 0)[1].pass, "H34f 达成率 50% 必须过")
+require(!GameGrade.checks(pollingHz: 1000, measuredHz: 1000, jitterP99Ms: 2.01, latencyP99Ms: 0, frameDropRatio: 0)[2].pass, "H34g 抖动 2.01 ms 必须不过")
+require(!GameGrade.checks(pollingHz: 1000, measuredHz: 1000, jitterP99Ms: 0, latencyP99Ms: 8.01, frameDropRatio: 0)[3].pass, "H34h 延迟 8.01 ms 必须不过")
+require(!GameGrade.checks(pollingHz: 1000, measuredHz: 1000, jitterP99Ms: 0, latencyP99Ms: 0, frameDropRatio: 0.021)[4].pass, "H34i 掉帧 2.1% 必须不过")
+let hSamplingChecks = GameGrade.checks(pollingHz: 1000, measuredHz: 1000, jitterP99Ms: 0, latencyP99Ms: 0, frameDropRatio: 0)
+require(!hSamplingChecks[2].pass, "H34j 抖动 0（没采到）不得算通过")
+require(hSamplingChecks[2].detail == "采样中", "H34k 没采到的项必须显示「采样中」（实际=\(hSamplingChecks[2].detail)）")
+let hBase = GameGrade.checks(pollingHz: 1000, measuredHz: 1000, jitterP99Ms: 1, latencyP99Ms: 1, frameDropRatio: 0)
+require(hBase.allSatisfy({ $0.pass }), "H35a 基准参数必须 5 项全过")
+// 注意：必须把前 n 项改成 fail，不是 dropFirst —— 删掉检查项等于少一项检查，
+// 失败数还是 0，定级不会变（第一版断言就这么写错过）。
+func hWithFails(_ n: Int) -> [PerfCheck] {
+    var c = hBase
+    let k = min(n, c.count)
+    for i in 0..<k { c[i] = PerfCheck(label: c[i].label, pass: false, detail: c[i].detail) }
+    return c
+}
+require(GameGrade.grade([]) == .fair, "H35b 空检查不得判成竞技级")
+require(GameGrade.grade(hWithFails(0)) == .competitive, "H35c 0 项失败 = 竞技级")
+require(GameGrade.grade(hWithFails(1)) == .good, "H35d 1 项失败 = 良好")
+require(GameGrade.grade(hWithFails(2)) == .fair, "H35e 2 项失败 = 一般")
+require(GameGrade.grade(hWithFails(3)) == .poor, "H35f 3 项失败 = 需处理")
+require(GameGrade.grade(hWithFails(5)) == .poor, "H35g 5 项全败仍是需处理")
+require(GameGrade.advice(pollingHz: 1000, measuredHz: 1000, jitterP99Ms: 1, latencyP99Ms: 1, frameDropRatio: 0, sampling: true).count == 1, "H36a 采样中只应给一条采样提示")
+require(GameGrade.advice(pollingHz: 1000, measuredHz: 1000, jitterP99Ms: 1, latencyP99Ms: 1, frameDropRatio: 0, sampling: false).count == 1, "H36b 全过只应给一条竞技级建议")
+let hAllBad = GameGrade.advice(pollingHz: 125, measuredHz: 10, jitterP99Ms: 5, latencyP99Ms: 20, frameDropRatio: 0.2, sampling: false)
+require(hAllBad.count == 5, "H36c 五项全坏必须各给一条建议（实际=\(hAllBad.count)）")
+require(hAllBad[0].contains("125"), "H36d 低回报率建议必须带上实测数值")
+
+// H37 就绪度：UI 直接拿 rawValue 和 symbol 渲染，空的会渲染出空白行
+for hR in GameReadiness.allCases {
+    require(!hR.rawValue.isEmpty, "H37a \(hR) rawValue 不能为空")
+    require(!hR.symbol.isEmpty, "H37b \(hR) symbol 不能为空")
+}
+require(GameReadiness.allCases.count == 4, "H37c 就绪度必须恰好 4 档")
+
+// H38 intervals(of:)：1.4.2 启动崩溃的直接回归守卫。
+// 必须对空数组 / 单元素短路，且返回值已升序（percentile 要求输入有序）。
+require(GamePerfProbe.intervals(of: []).isEmpty, "H38a 空时间戳必须返回空间隔（不能进 1..<count）")
+require(GamePerfProbe.intervals(of: [42]).isEmpty, "H38b 单时间戳必须返回空间隔")
+let hTwo = GamePerfProbe.intervals(of: [100, 300])
+require(hTwo.count == 1 && abs(hTwo[0] - MachClock.ms(200)) < 1e-9, "H38c 两个时间戳应给出一个间隔")
+let hUnsorted = GamePerfProbe.intervals(of: [0, 300, 100, 400])
+require(hUnsorted.count == 3, "H38d n 个时间戳应给出 n-1 个间隔")
+require(hUnsorted == hUnsorted.sorted(), "H38e 返回值必须已升序")
+
+// H39 空数据 recompute 必须能跑完：启动后第一次定时器 tick 时用户还没动鼠标。
+// 回归了这里会直接 trap，harness 进程自己死 → H 段报红，不靠断言文案兜底。
+let hProbe = GamePerfProbe()
+hProbe.deviceSource = { [] }
+hProbe.recompute()
+require(hProbe.pointerSamples == 0, "H39a 无样本时 pointerSamples 必须为 0")
+require(hProbe.sampling, "H39b 无样本时必须处于「采样中」")
+require(hProbe.checks.count == 5, "H39c 检查项仍应是 5 条")
+require(!hProbe.advice.isEmpty, "H39d 建议不能为空（至少要说明在采样）")
+hProbe.recordFrame(at: mach_absolute_time())
+hProbe.recompute()
+require(hProbe.frameSamples == 0, "H39e 单帧不能算出帧间隔")
+hProbe.reset()
+hProbe.recompute()
+require(hProbe.pointerSamples == 0 && hProbe.sampling, "H39f reset 后 recompute 同样必须能跑完")
+
+// H40 设置窗口标签页 URL：预览 / 远程诊断靠 smoose://settings?tab=game 直达。
+// 认不出的值必须返回 nil（保持当前页），不能崩、不能乱跳页。
+require(SettingsTab.fromURL("smoose://settings") == nil, "H40a 没有 tab 参数必须返回 nil")
+require(SettingsTab.fromURL("smoose://settings?tab=game") == .game, "H40b tab=game")
+require(SettingsTab.fromURL("smoose://settings?tab=4") == .game, "H40c tab=4 数字写法")
+require(SettingsTab.fromURL("smoose://settings?tab=about") == .about, "H40d tab=about")
+require(SettingsTab.fromURL("smoose://settings?tab=game&x=1") == .game, "H40e 后续 query 不能粘进 tab 名")
+require(SettingsTab.fromURL("smoose://settings?tab=") == nil, "H40f 空值必须返回 nil")
+require(SettingsTab.fromURL("smoose://settings?tab=nope") == nil, "H40g 认不出的名字必须返回 nil")
+require(SettingsTab.fromURL("smoose://settings?tab=99") == nil, "H40h 越界数字必须返回 nil")
+require(SettingsTab.game.rawValue == 4, "H40i game 页 tag 必须是 4（与 TabView 对齐）")
+require(SettingsTab.game.name == "game", "H40j game 页 URL 名必须是 game")
+require(SettingsTab.allCases.count == 6, "H40k 标签页必须恰好 6 个")
+
+// H41 时间戳时基归一化（2026-11-02，1.4.2 预览时抓到的真 bug）
+// 实测：CGEvent.timestamp 时基不统一 —— HID 事件是 mach tick，
+// 经 CGEvent.post() 注入的事件是「开机以来纳秒数」（同刻 tick≈1.05e13 / ns≈4.38e14，
+// 比值 41.6662 ≈ timebase 125/3，按 uptime 反查吻合）。
+// 不归一化：纳秒值永远大于 now → diff 恒 0 → 2 秒窗口过滤整体失效、
+// 事件率被算小 ~41.67 倍、指针延迟恒显示 0。真机预览时三项全中。
+let hNow = mach_absolute_time()
+require(MachClock.normalize(hNow, now: hNow) == hNow, "H41a tick 时基必须原样通过")
+require(MachClock.normalize(0, now: hNow) == 0, "H41b 0 时间戳必须原样通过")
+let hEarlier = hNow - MachClock.ticks(forMs: 50)
+require(MachClock.normalize(hEarlier, now: hNow) == hEarlier, "H41c 稍早的 tick 值不能被误判成纳秒")
+// 纳秒值 = tick 值 × (numer/denom)，归一化后必须落回同一 tick 量级
+let hNsNow = UInt64((Double(hNow) * Double(MachClock.info.numer) / Double(MachClock.info.denom)).rounded())
+let hBack = MachClock.normalize(hNsNow, now: hNow)
+require(abs(Double(hBack) - Double(hNow)) <= Double(hNow) * 0.001, "H41d 纳秒值必须换算回 tick 量级（偏差=\(Double(hBack) - Double(hNow))）")
+require(MachClock.normalize(hNsNow, now: hNow) < hNsNow, "H41e 归一化必须真的把数值变小（否则说明没换算）")
+// 判据边界：超过 now 的 8 倍才按纳秒处理，8 倍以内必须放过
+let hJustUnder = hNow &* 8
+require(MachClock.normalize(hJustUnder, now: hNow) == hJustUnder, "H41f 恰好 8 倍必须仍按 tick 处理")
+require(MachClock.normalize(hJustUnder &+ 1, now: hNow) != hJustUnder &+ 1, "H41g 超过 8 倍必须走纳秒分支")
+// recordPointer 必须真的用归一化后的值：灌一个纳秒时基的旧事件，
+// 若不过归一化，latencyRing 里会是 0、且窗口过滤会把它算成「就在刚才」。
+let hProbe2 = GamePerfProbe()
+hProbe2.deviceSource = { [] }
+let hOldNs = UInt64((Double(hNow - MachClock.ticks(forMs: 500)) * Double(MachClock.info.numer) / Double(MachClock.info.denom)).rounded())
+hProbe2.recordPointer(eventTimestamp: hOldNs, dx: 1, dy: 0)
+hProbe2.recompute()
+require(hProbe2.pointerSamples == 1, "H41h 归一化后 0.5 秒前的事件必须落在 2 秒窗口内（实际=\(hProbe2.pointerSamples)）")
+require(hProbe2.pointerLatencyP50Ms > 0, "H41i 归一化后指针延迟必须大于 0（实际=\(hProbe2.pointerLatencyP50Ms)）")
+require(hProbe2.pointerJitterP50Ms == 0, "H41j 单个事件不该有抖动样本")
+
 if failures == 0 { print("H-OK") } else { exit(1) }
 HSWIFT
 if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/h" \
     Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
     Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift \
-    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/TouchEvents.c "$WORK/main.swift" 2>"$WORK/h.log"; then
-  HFAILS="$(SMOOSE_H_ADHOC="$HADHOC" SMOOSE_H_TAMPER="$HTAMPER" \
-SMOOSE_H_REAL="/Applications/Smoose.app" "$WORK/h" 2>&1 | grep '^FAIL' || true)"
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/main.swift" 2>"$WORK/h.log"; then
+  # 变异验证（2026-11-02）抓到的假绿：只 grep '^FAIL' 时，二进制崩溃
+  # （"Fatal error: Range requires lowerBound <= upperBound" 之类）不以 FAIL 开头，
+  # HFAILS 为空 → 照常 ok。删掉 GamePerf 的空数组守卫后 harness 全绿就是这么来的。
+  # 现在两趟都必须：退出码为 0 且打出 H-OK 完成标记。
+  HRC1=0
+  HOUT1="$(SMOOSE_H_ADHOC="$HADHOC" SMOOSE_H_TAMPER="$HTAMPER" \
+SMOOSE_H_REAL="/Applications/Smoose.app" "$WORK/h" 2>&1)" || HRC1=$?
+  HFAILS="$(/bin/echo "$HOUT1" | grep '^FAIL' || true)"
+  if [ "$HRC1" != "0" ]; then HFAILS="$HFAILS H_EXIT1(rc=$HRC1 第一趟非零退出/崩溃)"; fi
+  /bin/echo "$HOUT1" | grep -q 'H-OK' || HFAILS="$HFAILS H_NOMARK1(缺 H-OK 完成标记)"
   # 第二趟：把同一个二进制包进一个 .app，用 Info.plist 把「期望 Team ID」改成别的值，
   # 这样官方包就该被判 teamMismatch（H25）。这是该分支唯一的自动载体。
   HMA="$WORK/hm.app"
   /bin/mkdir -p "$HMA/Contents/MacOS"
   /bin/cp "$WORK/h" "$HMA/Contents/MacOS/h"
   /usr/bin/printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>SmooseUpdateTeamID</key><string>FAKETEAM01</string></dict></plist>\n' > "$HMA/Contents/Info.plist"
-  HFAILS="$HFAILS$(SMOOSE_H_ADHOC="$HADHOC" SMOOSE_H_TAMPER="$HTAMPER" SMOOSE_H_PASS=2 \
-SMOOSE_H_REAL="/Applications/Smoose.app" "$HMA/Contents/MacOS/h" 2>&1 | grep '^FAIL' || true)"
+  HRC2=0
+  HOUT2="$(SMOOSE_H_ADHOC="$HADHOC" SMOOSE_H_TAMPER="$HTAMPER" SMOOSE_H_PASS=2 \
+SMOOSE_H_REAL="/Applications/Smoose.app" "$HMA/Contents/MacOS/h" 2>&1)" || HRC2=$?
+  HFAILS="$HFAILS$(/bin/echo "$HOUT2" | grep '^FAIL' || true)"
+  if [ "$HRC2" != "0" ]; then HFAILS="$HFAILS H_EXIT2(rc=$HRC2 第二趟非零退出/崩溃)"; fi
+  /bin/echo "$HOUT2" | grep -q 'H-OK' || HFAILS="$HFAILS H_NOMARK2(缺 H-OK 完成标记)"
   if [ -z "$HFAILS" ]; then ok "H 安全加固（https 强制 / Team ID / sha256 / 按拒因断言 + Mach-O 前置）"; else bad "H $HFAILS"; fi
 else
   bad "H 编译失败$(tail -3 "$WORK/h.log")"

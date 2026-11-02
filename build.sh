@@ -28,6 +28,7 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
   "$ROOT"/Sources/ScrollAxis.swift \
   "$ROOT"/Sources/PointerController.swift \
   "$ROOT"/Sources/ScrollEngine.swift \
+  "$ROOT"/Sources/GamePerf.swift \
   "$ROOT"/Sources/UpdateModel.swift \
   "$ROOT"/Sources/Updater.swift \
   "$ROOT"/Sources/Views.swift \

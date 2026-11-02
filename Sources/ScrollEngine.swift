@@ -203,6 +203,13 @@ final class ScrollEngine {
 
     private func handlePointerMove(_ event: CGEvent) -> Unmanaged<CGEvent>? {
         lock.lock()
+        // 游戏性能采集。必须放在所有 early-return 之前：默认状态就是
+        // 「未接管指针速度」，若放到 needRewrite 判断之后，一个样本都采不到。
+        // 代价是两次 getIntegerValueField + 两次数组写入 + 一次 mach_absolute_time()，
+        // 1000 Hz 下可忽略；且锁序固定为 ScrollEngine.lock → GamePerfProbe.lock，不会死锁。
+        GamePerfProbe.shared.recordPointer(eventTimestamp: event.timestamp,
+                                           dx: event.getIntegerValueField(F.dX),
+                                           dy: event.getIntegerValueField(F.dY))
         let speedManaged = config.pointerSpeedManaged
         let factor = config.pointerSpeedFactor
         // 前台 App 用缓存，不在 tap 回调里查 NSWorkspace：
@@ -264,6 +271,9 @@ final class ScrollEngine {
     // MARK: - 滚轮
 
     private func handleWheel(_ event: CGEvent) -> Unmanaged<CGEvent>? {
+        // 滚轮事件计数。放在最前面：被修饰键透传、被忽略的触控板滚动也要计数，
+        // 它们同样是真实的输入事件。
+        GamePerfProbe.shared.recordWheel()
         // 触控板 / Magic Mouse 产生的连续滚动
         let continuous = event.getIntegerValueField(F.cont) != 0
             || event.getIntegerValueField(F.phase) != 0
@@ -366,6 +376,9 @@ final class ScrollEngine {
 
     private func handleButton(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         let button = Int(event.getIntegerValueField(F.buttonNo))
+        // 侧键按下/抬起时长。只有 4/5 会经过 otherMouseDown/Up，
+        // 左右主键不流经这个 tap —— 界面里已注明「侧键」。
+        GamePerfProbe.shared.recordButton(button: button, down: type == .otherMouseDown)
         lock.lock()
         var btn = button
         // 交换后/前侧键（myMouseMagic 的 Swap Back/Forward）
@@ -427,6 +440,9 @@ final class ScrollEngine {
     }
 
     private func frame(at hostTime: Double) {
+        // 显示帧采集。放在 profile 判空之前，否则「未启用平滑滚动」时刷新率采不到 ——
+        // 而刷新率恰恰是游戏面板里最该始终有数的指标。
+        GamePerfProbe.shared.recordFrame()
         lock.lock()
         guard let profile = cachedProfile else {
             // 不拦截时保持状态干净

@@ -39,6 +39,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         registerURLEntry()
         ScrollEngine.shared.install(initial: Preferences.shared.stored)
         PointerController.shared.start()
+        // 游戏性能面板：设备参数从 PointerController 已枚举到的设备拿，
+        // 不自己再开一套 IOHID 枚举（两套枚举会互相抢设备）。
+        GamePerfProbe.shared.deviceSource = {
+            PointerController.shared.devices.map {
+                PointerDeviceRef(registryID: $0.registryID,
+                                 name: $0.name,
+                                 transport: $0.transport,
+                                 builtIn: $0.builtIn)
+            }
+        }
+        GamePerfProbe.shared.start()
         refreshActiveApp()
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -243,6 +254,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if url.contains("settings") {
             openSettingsWindow()
+            // smoose://settings?tab=game —— 直达某一页。认不出的 tab 名保持当前页，
+            // 不影响开窗本身（预览 / 远程诊断都走这里）。
+            if let tab = SettingsTab.fromURL(url) { NavState.shared.selectedTab = tab.rawValue }
         } else {
             StatusBarController.shared.showAtCenter()
         }

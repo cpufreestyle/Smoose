@@ -89,11 +89,11 @@
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 部署后实测）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app`（可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
-| 源码 | `Sources/*.swift` 12 个文件，共 **3971 行**（Views 1174 / Updater 749 / ScrollEngine 504 / App 409 / Model 355 / UpdateModel 198 / PointerController 186 / LogitechHIDPP 145 / ScrollAxis 130 / Actions 60 / CursorZoom 48 / main 13；2026-11-01 `wc -l` 实测） |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**（含游戏性能检测，Mach-O sha256 `cb00dbd3105ec7da…`，`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / **`Smoose-1.4.2-pre-gameperf.app`**（含游戏功能前的最后一个可用版，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
+| 源码 | `Sources/*.swift` **13 个文件**（新增 `GamePerf.swift`，2026-11-02 `wc -l` 实测总行数以 `./build.sh` 编译清单为准；2026-11-01 时为 12 文件 3971 行，本轮新增游戏性能检测约 480 行 + Model/App/Views/ScrollEngine 改动） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
-| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/S18-S24/S25-S27/S28-S31/S32-S34/H **二十一段**，2026-11-01 `PASS=23 FAIL=0`）、`Tests/InterpTest.swift`、`Probe/main.swift` |
+| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/S18-S24/S25-S27/S28-S31/**S32-S35**/H **二十二段**，2026-11-02 `PASS=24 FAIL=0`；H 段已补 H31–H41 游戏性能检测断言，S35 为游戏页 URL 直达守卫）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
 | 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / v1.4.1 / **v1.4.2**，latest = v1.4.2；**版本号从 1.4.0 起顺延**） |
 
@@ -103,6 +103,23 @@
 > 归档内容：`dist/` 里 4 个旧预部署 `.app` + 9 个旧版 zip + 7 个旧 json、`/Applications` 里 9 个**未记载**的额外备份、桌面 5 个 `.MichaelClip.app.old.*` 隐藏副本 + `.DS_Store`、`/tmp/smoose_git_sync_140` 临时克隆；另 `rmdir` 了空的 `logs/`。
 > **上表记载的 5 项回滚备份链一个没动**（`-1.2.1-predeploy` / `-1.3.0-pre-140` / `-1.4.0-pre-141` / `-1.4.1-pre-deploy` / `-1.4.2-pre-deploy`），`dist/Smoose-1.4.2.zip` 保留（F 段需要）。清理后 harness 复跑 `PASS=23 FAIL=0`。
 > 未动：`~/Desktop/MichaelClip.app`（旧版 v2.2.0 实例，**当时正在运行**，PID 34021，bundle id `com.michaelqiu.clip` 与 Smoose 的 `app.smoose.macos` 不同）——要一并清掉需先退出该进程。
+---
+
+> **2026-11-02 游戏性能检测轮（SPEC §25）**：新增 `Sources/GamePerf.swift`，设置窗口加「游戏」tab，
+> 采集全部复用已有回调（CGEvent tap + CVDisplayLink），对 Smoose 自身零额外系统开销。
+> 真机预览四项指标均为真实数据：G502 X 接收器 1000 Hz / 内置触控板 125 Hz（IORegistry 实读）、
+> 指针事件率 744 Hz、移动抖动 p50/p99/max = 0.38/7.94/42.20 ms、
+> 指针延迟 p50/p99/max = 0.07/0.73/1.62 ms、显示 120.2 Hz 掉帧 0.0%。
+> **本轮修掉两个真 bug**：① `recompute()` 里 `for i in 1..<count` 在空数组时构成 `1..<0`，
+> 启动后第一次定时器 tick 即 SIGTRAP，表现为「点桌面图标完全没反应」；
+> ② `CGEvent.timestamp` 时基不统一 —— HID 事件是 mach tick，经 `CGEvent.post()` 注入的事件是
+> **开机以来纳秒数**（比值恰为 timebase 125/3），导致指针延迟恒 0、事件率被算小 41.67 倍、
+> 2 秒窗口过滤整体失效。旧交接文档「timestamp 与 mach_absolute_time 同时基」只对 HID 事件成立，已作废。
+> 另修 harness 假绿：H/D 段只 `grep '^FAIL'` 时，编译产物崩溃（`Fatal error:` 不以 FAIL 开头）也算通过，
+> 现要求退出码 0 且打出 H-OK / D-OK。harness 增至二十二段 `PASS=24 FAIL=0`，
+> H31–H41 变异验证 12/12 报红（两条等价变异暴露了「未环绕快照」测试盲区，已补 H32l）。
+> 新增 `smoose://settings?tab=<name>` 可直达任一标签页（预览 / 远程诊断用，AppleScript 点 tab 不可靠）。
+> **未发版**：版本仍 1.4.2，新功能还没走发版流程。
 ---
 
 ## 1.1 安全修复与缺陷修复（2026-10-26 只读审核后）
@@ -514,6 +531,12 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   * ~~`dismiss()` 会丢掉已安装的更新~~ **2026-11-01 已修（D28）**：新版本已替换到 /Applications，
   收起横幅 = 丢掉唯一重启入口。readyToRelaunch 时 dismiss 为 no-op，该分支也不提供「稍后再说」。
   由 S32/S33 守住，且已真机端到端实测（D29）。
+- **游戏性能检测的「实时指标」是 2 秒滚动窗口**：鼠标停下 2 秒后所有指针指标归零并显示「正在采样」。
+  这是设计如此（要反映「刚才那一把」），但意味着**截图 / 演示必须趁鼠标还在动的时候抓**，
+  否则会误判成功能坏了（2026-11-02 就这么误判过一轮）。
+- **`CGEvent.timestamp` 时基不统一**（2026-11-02 实测，SPEC §25.2）：HID 事件是 mach tick，
+  经 `CGEvent.post()` 注入的事件是开机以来纳秒数。任何直接拿 `event.timestamp` 和
+  `mach_absolute_time()` 相减的代码都必须先过 `MachClock.normalize`。
 - ~~`teamMismatch` 无自动载体~~ **2026-10-28 已解决（H25）**：用「改期望值」而不是「造假包」拿到载体 ——
   把测试二进制包进带 `SmooseUpdateTeamID` 的 `.app`，官方包就会撞上 teamMismatch。`verifySignature` 的
   三条拒因分支（ad-hoc → `notSigned`、篡改 → `signatureInvalid`、他人 Team → `teamMismatch`）现在都有断言。
@@ -637,6 +660,26 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
       **为什么发这一版**：v1.4.1 的 asset 是第十/十一轮的代码，**不含**第十二轮的 D27-D29
       （菜单栏补齐更新全流程、dismiss 不丢已安装更新）。版本号提交 `451ad3e`。
       部署后 `/Applications/Smoose.app` 版本 1.4.2、Mach-O sha256 `d88b7205…0dca`、授权 `auth_value=2` 保留。
+
+- [x] **2026-11-02 第十三轮：鼠标游戏性能检测（SPEC §25，已完成 + 真机预览，尚未发版）**。
+      新增 `Sources/GamePerf.swift` 与「游戏」tab；采集复用已有回调（CGEvent tap + CVDisplayLink），
+      对 Smoose 自身零额外系统开销。harness 二十一段 → 二十二段，`PASS=24 FAIL=0`。
+      本轮修掉两个真 bug，都不是「功能没写对」而是「边界没守住」：
+      ① `recompute()` 的 `for i in 1..<count` 在指针环为空时构成 `1..<0`，Swift 运行时直接 SIGTRAP ——
+      触发条件是**默认状态**（启动后第一次 1 Hz tick，用户还没动鼠标），表现为「点桌面图标完全没反应」；
+      ② `CGEvent.timestamp` 时基不统一：HID 事件是 mach tick，经 `CGEvent.post()` 注入的事件是
+      **开机以来纳秒数**（同刻比值 41.6662 ≈ timebase 125/3，按 uptime 反查吻合）。
+      不归一化时三个指标同时坏：指针延迟恒 0、事件率被算小 41.67 倍、2 秒窗口过滤整体失效。
+      旧交接文档「timestamp 与 mach_absolute_time 同时基」只对 HID 事件成立，**已作废**。
+      另修 harness 假绿：H/D 段只 `grep '^FAIL'`，而运行时陷阱打的是 `Fatal error:`（不以 FAIL 开头），
+      二进制中途死掉也算通过 —— 删掉空数组守卫后 harness 全绿就是这么来的。现要求退出码 0 且打出 H-OK / D-OK。
+      变异验证 12/12 报红；两条**语义等价**的变异没报红，其中一条暴露了「未环绕（total < capacity）快照顺序」
+      这个测试盲区，补 H32l 后才抓住。教训：变异没报红时先怀疑变异本身等价，别直接宣称断言有牙。
+      新增 `smoose://settings?tab=<name>` 直达标签页（AppleScript 点 SwiftUI tab 不可靠）。
+      **真机预览**（修复后）：G502 X 接收器 1000 Hz / 内置触控板 125 Hz、指针事件率 744 Hz、
+      移动抖动 p50/p99/max = 0.38/7.94/42.20 ms、指针延迟 p50/p99/max = 0.07/0.73/1.62 ms、
+      显示 120.2 Hz 掉帧 0.0%。⚠️ 指标是 2 秒滚动窗口，鼠标一停就归「采样中」，截图要趁早。
+      **尚未发版**：版本仍 1.4.2，`/Applications/Smoose.app` 是含新功能的工作副本。
 
 ### 历史轮次要点（避免重复踩坑）
 

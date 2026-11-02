@@ -230,7 +230,8 @@ struct SettingsWindow: View {
             PointerTab().tabItem { Label("指针", systemImage: "cursorarrow") }.tag(1)
             AppRulesTab().tabItem { Label("按应用", systemImage: "macwindow.on.rectangle") }.tag(2)
             ButtonsTab().tabItem { Label("按键", systemImage: "rectangle.3.offgrid") }.tag(3)
-            AboutTab().tabItem { Label("关于", systemImage: "info.circle") }.tag(4)
+            GamePerfTab().tabItem { Label("游戏", systemImage: "gamecontroller") }.tag(4)
+            AboutTab().tabItem { Label("关于", systemImage: "info.circle") }.tag(5)
         }
         // 固定 width/height 会把 NSHostingView 的约束锁死，窗口边缘拖不动；
         // 改成下限约束，允许用户按需放大（App.swift 里 styleMask 已含 .resizable）。
@@ -596,6 +597,137 @@ struct ButtonsTab: View {
                 prefs.bindings[String(button)] = action.rawValue
             }
         })
+    }
+}
+
+// MARK: - 游戏性能
+
+/// 鼠标游戏性能检测面板。
+///
+/// 数据来源全部是 Smoose **本来就在跑**的两条回调，不新开 tap、不加轮询：
+///   · 指针 / 侧键 —— ScrollEngine 的 CGEvent tap 已拦 mouseMoved 与 otherMouseDown/Up
+///   · 显示帧 —— ScrollEngine 的 CVDisplayLink
+/// 所以打开这个页面对 Smoose 自身零额外系统开销。
+struct GamePerfTab: View {
+    @ObservedObject private var probe = GamePerfProbe.shared
+
+    var body: some View {
+        Form {
+            Section("设备参数（硬件实读）") {
+                if probe.devices.isEmpty {
+                    Text("还没有枚举到指针设备。").font(.system(size: 11)).foregroundStyle(.secondary)
+                } else {
+                    ForEach(probe.devices) { d in
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(d.name + (d.builtIn ? "（内置）" : ""))
+                                    .font(.system(size: 12, weight: .medium))
+                                Text("\(d.transport.isEmpty ? "传输未知" : d.transport)"
+                                     + " · 上报间隔 \(String(format: "%.0f", d.reportIntervalUs)) µs")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(d.pollingLabel)
+                                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(d.pollingHz >= 500 ? .green : .orange)
+                        }
+                    }
+                }
+                Text("回报率读自 IORegistry 的 ReportInterval，是鼠标板载配置的真实值"
+                     + "（G502 X 接收器实测 1000 µs = 1000 Hz）。"
+                     + "实际传感器 DPI 存在鼠标内部配置文件里，macOS 读不到，所以这里不显示 DPI。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            Section("实时指标（2 秒滚动窗口）") {
+                if probe.sampling {
+                    Label("正在采样：移动鼠标约 2 秒", systemImage: "waveform.path.ecg")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                metricRow("指针事件率", probe.pointerRateHz > 0 ? "\(String(format: "%.0f", probe.pointerRateHz)) Hz" : "—",
+                          sub: probe.pointerSamples > 0 ? "\(probe.pointerSamples) 个样本" : "")
+                metricRow("移动抖动 p50 / p99 / max",
+                          "\(ms(probe.pointerJitterP50Ms)) / \(ms(probe.pointerJitterP99Ms)) / \(ms(probe.pointerJitterMaxMs))")
+                metricRow("指针延迟 p50 / p99 / max",
+                          "\(ms(probe.pointerLatencyP50Ms)) / \(ms(probe.pointerLatencyP99Ms)) / \(ms(probe.pointerLatencyMaxMs))")
+                metricRow("显示刷新率", probe.refreshHz > 0 ? "\(String(format: "%.1f", probe.refreshHz)) Hz" : "—",
+                          sub: "掉帧 \(String(format: "%.1f%%", probe.frameDropRatio * 100))"
+                               + " · \(probe.frameSamples) 帧")
+                metricRow("滚轮事件率", probe.wheelRateHz > 0 ? "\(String(format: "%.1f", probe.wheelRateHz)) Hz" : "—")
+                metricRow("侧键按下时长", probe.sideButtonMs > 0 ? ms(probe.sideButtonMs) : "—",
+                          sub: "只统计侧键 4/5，左右主键不经过事件拦截")
+            }
+
+            Section("就绪度") {
+                HStack(spacing: 10) {
+                    Image(systemName: probe.sampling ? "hourglass" : probe.readiness.symbol)
+                        .font(.system(size: 24))
+                        .foregroundStyle(probe.sampling ? .secondary : color(for: probe.readiness))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(probe.sampling ? "采样中" : probe.readiness.rawValue)
+                            .font(.headline)
+                        Text(probe.sampling ? "移动鼠标 2 秒后给出评级" : summary())
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(probe.checks) { c in
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: c.pass ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(c.pass ? .green : .orange)
+                            .font(.system(size: 12))
+                        Text(c.label).font(.system(size: 12))
+                        Spacer()
+                        Text(c.detail)
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("建议") {
+                ForEach(Array(probe.advice.enumerated()), id: \.offset) { i, s in
+                    Text("\(i + 1). \(s)")
+                        .font(.system(size: 11))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Button("重置统计") { probe.reset() }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func ms(_ v: Double) -> String { v > 0 ? String(format: "%.2f ms", v) : "—" }
+
+    /// 指标行：左边标题（可带灰色小字补充），右边等宽数字。
+    /// 用 monospacedDigit 是因为数字每秒都在跳，比例字体下宽度会抖。
+    private func metricRow(_ title: String, _ value: String, sub: String = "") -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12))
+                if !sub.isEmpty {
+                    Text(sub).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+        }
+    }
+
+    private func color(for r: GameReadiness) -> Color {
+        switch r {
+        case .competitive: return .green
+        case .good: return .mint
+        case .fair: return .orange
+        case .poor: return .red
+        }
+    }
+
+    private func summary() -> String {
+        let failed = probe.checks.filter { !$0.pass }
+        if failed.isEmpty { return "5 项检查全部通过" }
+        return "\(failed.count) 项未达标：\(failed.map { $0.label }.joined(separator: "、"))"
     }
 }
 
