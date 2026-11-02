@@ -38,6 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         StatusBarController.shared.install()
         registerURLEntry()
         ScrollEngine.shared.install(initial: Preferences.shared.stored)
+        // 点击刹车（移植 Mos 的 mouseLeftEventCallBack）：左键按下立刻收掉滚动尾巴。
+        // 用 NSEvent 全局监听而不是再开一个 listen-only CGEventTap：全局监听只读不拦，
+        // 不会碰到主 tap 的事件流，也不需要一个新线程；代价是点 Smoose 自己窗口时收不到
+        // （那种场景没有滚动尾巴要收，无影响）。
+        NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { _ in
+            ScrollEngine.shared.brake()
+        }
         PointerController.shared.start()
         // 游戏性能面板：设备参数从 PointerController 已枚举到的设备拿，
         // 不自己再开一套 IOHID 枚举（两套枚举会互相抢设备）。

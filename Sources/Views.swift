@@ -248,6 +248,12 @@ struct GeneralTab: View {
                 Toggle("启用平滑滚动", isOn: $prefs.masterEnabled)
                 Toggle("忽略触控板 / Magic Mouse（推荐）", isOn: $prefs.ignoreTrackpad)
             }
+            Section("输出方式") {
+                Toggle("模拟触控板滚动（推荐）", isOn: $prefs.global.simulateTrackpad)
+                Text("把平滑后的滚动标记成触控板滚动（带开始 / 结束 / 惯性相位），Chrome、Safari 等会直接采用上面调好的曲线，不再二次加工；个别 App 表现异常时关掉即可，关掉后完全回到旧的「滚轮 + 像素」行为。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
             Section("曲线") {
                 LabeledSlider(title: "距离倍率", value: $prefs.global.speed, range: 0.2...8, unit: "×",
                               help: "≈4× 接近 Chrome/Safari 原生距离，≈1.5× 接近原生 AppKit 控件")
@@ -458,6 +464,8 @@ struct AppRuleRow: View {
                     Toggle("垂直反向", isOn: $profile.reverseVertical)
                     Toggle("水平反向", isOn: $profile.reverseHorizontal)
                 }
+                Toggle("模拟触控板滚动", isOn: $profile.simulateTrackpad)
+                    .disabled(!profile.enabled)
                 ModifierBypassRow(title: "按住时透传滚动",
                                  mask: Binding(get: { profile.bypassModifiers },
                                               set: { profile.bypassModifiers = $0 }))

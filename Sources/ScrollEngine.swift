@@ -33,6 +33,9 @@ final class ScrollEngine {
 
     private var axisY = ScrollAxis()
     private var axisX = ScrollAxis()
+    /// 合成事件的相位状态机（模拟触控板滚动时启用）。
+    /// 只在 ScrollEngine.lock 内访问：noteInput 来自 tap 线程、advance 来自显示链接线程。
+    private var phaseTracker = ScrollPhaseTracker()
     private var pointerRemX = 0.0
     private var pointerRemY = 0.0
     private var lastFrameTime: Double = 0
@@ -65,6 +68,8 @@ final class ScrollEngine {
         lock.lock(); defer { lock.unlock() }
         config = state
         cachedProfile = config.profile(for: activeAppID)
+        // 输出方式可能被切换：重置相位状态机，避免下次启用手势从半截状态开始
+        phaseTracker.reset()
         // 配置热更新后重置亚像素累积，避免倍率切换瞬间出现一次跳变
         pointerRemX = 0
         pointerRemY = 0
@@ -296,6 +301,16 @@ final class ScrollEngine {
             publishMonitor(rawY: rawY, continuous: continuous, handled: false)
             return Unmanaged.passUnretained(event)
         }
+        // Launchpad 透传（移植 Mos `ScrollUtils.getLaunchpadActivity`）：
+        // 10.15–26 上 Launchpad 寄宿在 Dock 进程里，前台 bundle id 就是 com.apple.dock。
+        // Mos 原注释：平滑后的滚动事件在 Launchpad 里无法被识别，必须原样放行，
+        // 否则「打开 Launchpad 用滚轮翻页没反应」。macOS 26+ 虽已修复，
+        // 但 Dock 自身（叠放目录预览）也吃原生滚动更稳，透传没有副作用。
+        if activeAppID == "com.apple.dock" {
+            lock.unlock()
+            publishMonitor(rawY: rawY, continuous: continuous, handled: false)
+            return Unmanaged.passUnretained(event)
+        }
         // 修饰键透传：按住时不对该次滚动做任何接管（精确操作场景）
         if profile.bypassModifiers != 0,
            (event.flags.rawValue & profile.bypassModifiers) != 0 {
@@ -332,6 +347,12 @@ final class ScrollEngine {
             axisX.push(prepare(scaledX, profile: profile, reverse: profile.reverseHorizontal, continuous: continuous))
         } else {
             axisX.jump(prepare(scaledX, profile: profile, reverse: profile.reverseHorizontal, continuous: continuous))
+        }
+        // 手势开始 / 续接：供相位状态机区分 tracking 与 momentum。
+        // 关掉「模拟触控板」时完全不碰状态机，重新打开也不会从半截状态开始
+        // （apply() 会 reset）。
+        if profile.simulateTrackpad {
+            phaseTracker.noteInput(now: CACurrentMediaTime())
         }
         lock.unlock()
 
@@ -448,6 +469,7 @@ final class ScrollEngine {
             // 不拦截时保持状态干净
             axisY.reset()
             axisX.reset()
+            phaseTracker.reset()
             lastFrameTime = hostTime
             lock.unlock()
             return
@@ -459,19 +481,51 @@ final class ScrollEngine {
         let tauX = profile.smoothHorizontal ? profile.tau : 0
         let dy = axisY.advance(dt: dt, tau: tauY)
         let dx = axisX.advance(dt: dt, tau: tauX)
+        let moved = dy != 0 || dx != 0
+        let settled = axisY.isIdle && axisX.isIdle
+        // 相位计划：用 CACurrentMediaTime() 而不是 hostTime —— CVDisplayLink 的
+        // videoTime 与 tap 回调里用的墙钟时基不同，混用会让 continuationThreshold 失效。
+        let plan = profile.simulateTrackpad
+            ? phaseTracker.advance(now: CACurrentMediaTime(), posting: moved, settled: settled)
+            : nil
         lock.unlock()
 
-        if dy != 0 || dx != 0 {
-            post(dy: dy, dx: dx)
+        // 顺序固定：先补打断帧（重新接管惯性时的 MomentumEnd），再发本帧增量，
+        // 最后发收尾帧。消费端靠这个顺序识别「一次手势结束了」。
+        if let plan, !plan.isEmpty {
+            if let pre = plan.interrupt { post(dy: 0, dx: 0, phase: pre) }
+            if moved { post(dy: dy, dx: dx, phase: plan.body) }
+            if let end = plan.end { post(dy: 0, dx: 0, phase: end) }
+        } else if moved {
+            post(dy: dy, dx: dx, phase: nil)
         }
     }
 
-    private func post(dy: Int32, dx: Int32) {
+    /// 点击刹车（移植 Mos `mouseLeftEventCallBack` → `ScrollPoster.stop`）：
+    /// 左键按下立刻收掉滚动尾巴，含还没走完的距离；再补一帧收尾事件，
+    /// 让消费端知道手势结束（不收尾时部分 App 会拖着 momentum 不放）。
+    func brake() {
+        lock.lock()
+        let wasActive = phaseTracker.isActive
+        let sim = cachedProfile?.simulateTrackpad ?? false
+        axisY.brake()
+        axisX.brake()
+        phaseTracker.reset()
+        lock.unlock()
+        if wasActive && sim { post(dy: 0, dx: 0, phase: .trackingEnded) }
+    }
+
+    private func post(dy: Int32, dx: Int32, phase: ScrollPhaseValue?) {
         lock.lock()
         defer { lock.unlock() }
         guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return }
         event.setIntegerValueField(F.userData, value: Self.magic)
-        event.setIntegerValueField(F.cont, value: 0)
+        // 模拟触控板滚动：isContinuous=1 + 明确相位，消费端就走触控板路径。
+        // 关闭时三者全 0，与老版本逐字节一致（ScrollPhaseFields.write 的契约）。
+        let fields = ScrollPhaseFields.write(simulateTrackpad: phase != nil, phase: phase)
+        event.setIntegerValueField(F.cont, value: fields.cont)
+        event.setDoubleValueField(F.phase, value: fields.scroll)
+        event.setDoubleValueField(F.momentum, value: fields.momentum)
         // 显式打时间戳（ns since startup）：合成事件不带 timestamp 时，
         // 消费端（游戏 / 高帧率 App 的动量计算）拿到的是 0 或不可信值，平滑会抖
         event.timestamp = CGEventTimestamp(CACurrentMediaTime() * 1_000_000_000)

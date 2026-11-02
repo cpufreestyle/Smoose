@@ -678,5 +678,119 @@ symbol 置空 → H37b；`fromURL` 返回 nil → H40b/d/e；tag 4→5 → S35c�
 变异验证时发现：删掉空数组守卫后 harness 依然全绿。原因是 H/D 段只
 `grep '^FAIL'`，而 Swift 运行时陷阱打的是 `Fatal error: ...`（不以 FAIL 开头），
 二进制中途死掉时 `HFAILS` 为空 → 照常 `ok`。已修：两趟 H 和 D 都必须
-**退出码为 0 且打出完成标记（H-OK / D-OK）**，否则记 `H_EXIT(rc=…)` / `H_NOMARK`。
 凡是「跑编译产物 + 解析输出」的断言都要防这一手，不能只 grep 失败行。
+
+## 26. 参照 Mos / LinearMouse 优化：合成事件相位 + 点击刹车（2026-11-03）
+
+本轮对照两份开源实现找差距：`caldis/Mos`（Swift 重写后的 `Mos/ScrollCore/`：
+`ScrollCore` / `ScrollPoster` / `ScrollPhase` / `ScrollFilter` / `ScrollEvent`）与
+`linearmouse/linearmouse`（`EventTransformer/SmoothedScrollingEngine`，速度式模型）。
+Smoose 的位置式指数插值（`ScrollAxis`）+ 亚像素累积本身不输它们，真正拉开差距的是
+**合成事件长什么样**和**手势怎么收尾**。
+
+### 26.1 根因：消费端在二次加工我们的曲线
+
+Smoose 早期 `post()` 写出的事件是 `isContinuous=0`、`scrollPhase=0`、`momentumPhase=0` 的
+像素增量。在 Chrome / Safari / 原生 `NSScrollView` 看来这就是「物理鼠标滚轮 + 像素增量」，
+于是它们套用自己的滚轮逻辑（行量化、自己的动量与手势状态机），Smoose 调好的曲线被第二遍加工 ——
+这就是用户觉得「同样的曲线，Mos 里更跟手」的根因。
+
+Mos 的做法（`ScrollPoster.post`）：合成事件一律 `isContinuous=1`，并按当前手势写
+`scrollWheelEventScrollPhase` / `scrollWheelEventMomentumPhase`，消费端就走
+「触控板像素滚动」路径，只认我们给出的像素量。LinearMouse 也走同一条路。
+
+### 26.2 相位值表（移植 Mos `PhaseValueMapping`）
+
+| 手势段 | scroll（field 99） | momentum（field 123） | 发出时机 |
+| --- | --- | --- | --- |
+| trackingBegan | 1 | 0 | 手势首帧增量 |
+| trackingChanged | 2 | 0 | 手指段持续增量 |
+| trackingEnded | 4 | 0 | 手指段到位后的零增量收尾 |
+| momentumBegan | 0 | 1 | 输入停下后尾巴首帧 |
+| momentumChanged | 0 | 2 | 尾巴持续 |
+| momentumEnded | 0 | 3 | 尾巴走完 / 被打断时的零增量收尾 |
+
+`ScrollPhaseFields.write(simulateTrackpad:phase:)` 是唯一写字段的地方，返回
+`SyntheticScrollFields(cont, scroll, momentum)`。**关闭开关时三者必须全 0** ——
+这是「关掉 = 与老版本逐字节一致」的契约（S36g/S36g2 断言）。
+
+> **真机实测（2026-11-03 字段探针）**：`CGEvent(scrollWheelEvent2Source:units: .pixel, …)`
+> 造出来的新事件 **`isContinuous` 默认就是 1**，`scrollPhase` / `momentumPhase` 默认是 0。
+> 也就是说 1.4.2 里 `setIntegerValueField(F.cont, value: 0)` 那一行是**有意义**的 ——
+> 不写它，合成事件本来就带着 `isContinuous=1`。本轮把这一行换成按开关写 1/0，
+> 并实测四个字段（88 / 99 / 123 / 42）与 `pointDeltaAxis1` 在新事件上都能写进去、读得回。
+
+### 26.3 状态机与两个阈值（对齐 Mos）
+
+`ScrollPhaseTracker`（`Sources/ScrollPhases.swift`，纯结构体）：
+
+```
+idle ─输入→ tracking ─输入间隔>0.18s→ momentum ─轴到位→ idle
+                 ↑___________________________________|
+                       尾巴未走完又滚：先补一帧 MomentumEnd
+```
+
+- `continuationThreshold = 0.18`（Mos `manualContinuationThreshold`）：输入间隔 ≤ 它算
+  「手指还在滚」；超过则本帧起算惯性段。
+- `separationThreshold = 0.45`（Mos `manualSeparationThreshold`）：距上次输入 ≥ 它算一次
+  新的独立手势，重新发 Began。
+- `begun` 只在**真的投递了帧**时置位。亚像素累积的帧没有增量，若提前置位，
+  手势的第一帧就会从 Changed 开始，消费端的手势状态机少一次 Began。
+
+### 26.4 帧序：interrupt → body → end
+
+`ScrollEngine.frame()` 每帧向 tracker 要一个 `Plan`，按固定顺序投递：
+先 `interrupt`（重新接管惯性时补的零增量 MomentumEnd），再 `body`（本帧增量，带相位），
+最后 `end`（轴到位后的零增量收尾）。收尾帧不是可选项：不收尾时部分 App（Chrome）会拖着
+自己的 momentum 不放，表现为「明明停了你还能看到页面在飘」。
+
+**时基坑**：tracker 的两个入口必须同时基。`noteInput` 在 tap 回调、`advance` 在
+CVDisplayLink 回调，两者都用 `CACurrentMediaTime()`。CVDisplayLink 的 `videoTime`
+是另一套时基，混用会让 `continuationThreshold` 永久失效（要么永远 momentum，要么永远 tracking）。
+
+### 26.5 点击刹车
+
+移植 Mos `mouseLeftEventCallBack → ScrollPoster.stop`：左键按下立刻收掉尾巴，
+`ScrollAxis.brake()` 把 `target` 拍回 `current`（剩余距离作废，对应 Mos 的 `buffer = current`），
+再补一帧零增量 `trackingEnded`。
+用 `NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown)` 而不是再开一个
+listen-only CGEventTap：全局监听只读不拦，碰不到主 tap 的事件流，也不需要新线程。
+代价是点 Smoose 自己窗口时收不到 —— 那种场景没有滚动尾巴要收，无影响。
+
+### 26.6 Launchpad / Dock 透传
+
+移植 Mos `ScrollUtils.getLaunchpadActivity`：10.15–26 上 Launchpad 寄宿在 Dock 进程里，
+前台 bundle id 就是 `com.apple.dock`。Mos 原注释：平滑后的滚动事件在 Launchpad 里无法被识别，
+必须原样放行，否则「打开 Launchpad 用滚轮翻页没反应」。Smoose 原来只在**指针**路径放行
+Dock / Finder，滚轮路径没有。本轮在 `handleWheel` 补上 `activeAppID == "com.apple.dock"` 透传。
+
+### 26.7 开关契约
+
+`ScrollProfile.simulateTrackpad`（默认 **true**，per-app 可覆盖，旧配置缺键兜底 true）：
+- 界面：「滚动」页新增「输出方式」段；每应用规则的「细节参数」里同样有。
+- 套用预设时保留该开关（和 boost 同一个理由：它是输出方式、不是曲线参数）。
+- 关掉后 `post()` 写 `cont=0 / phase=0 / momentum=0`，与 1.4.2 逐字节一致。
+- `apply()` 会 `phaseTracker.reset()`：中途切换开关不会从半截手势状态开始。
+
+### 26.8 断言与变异验证
+
+S36–S38 编译真 `Sources/ScrollPhases.swift` + `Sources/ScrollAxis.swift`：
+相位常量六项、字段写入（关闭/无相位/开启/惯性收尾）、状态机（首帧 Began / Changed /
+转动量 / 收尾 / 亚像素不吃 Began / 打断补 MomentumEnd / 隔太久重新 Began / 手指段收尾 /
+reset）、刹车（空轴无害 / 丢弃剩余距离 / 停在本帧位置 / 之后不再投递）。
+S39 十三条文本守卫（先剥注释）：`post()` 写三个字段、帧循环推进 tracker、输入通知 tracker、
+`brake()` 接两轴、Dock 透传、App 装左键监听、全局与每应用开关接线、旧配置兜底。
+
+变异验证 8 条全部报红：`continuationThreshold 0.18→9.99`（S37g/h/i/o）、
+`trackingEnded scroll 4→0`（S36c）、brake 去掉 `target=current`（S38d/e/f）、
+`write` 忽略开关（S36g/g2）、去掉 `pendingInterrupt`（S37o）、`begun` 不依赖 posting
+（S37j/m/n）、收尾帧相位用错（S37i）、`settled` 恒 false（S37i/k/t）。
+
+### 26.9 三条没做的（记下来免得下轮重复调研）
+
+- **LinearMouse 的速率投影**（`WheelInputVelocityEstimator`，快甩时每格滚轮走更远）：
+  会改变距离语义，与「微信等 App 已经调低倍率」的现有策略冲突，本轮不做。
+- **LinearMouse 的速度式模型 + 惯性**（velocity / momentumDecay / reengagementBlend）：
+  Smoose 的位置式插值已有等价尾巴，换模型等于把 1.4.0 以来调的所有曲线参数全部作废，不做。
+- **Mos 的 `CGEventPostToPid` 直投目标进程**：Mos 用它消除崩溃与「动量不跟随光标」，
+  但 Smoose 的 `.cghidEventTap` 投递 + 回声守卫已经稳定跑了 20 多轮，不赌。

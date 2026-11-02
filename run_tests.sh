@@ -924,6 +924,152 @@ APPNC="$(/bin/echo "$(cat "$ROOT/Sources/App.swift")" | /usr/bin/sed -E 's://.*$
 /bin/echo "$GPVIEW" | /usr/bin/grep -q 'probe.reset()' || S35FAILS="$S35FAILS S35h"
 if [ -z "$S35FAILS" ]; then ok "S35 游戏页标签/URL 直达/采样中/重置（8 项）"; else bad "S35$S35FAILS"; fi
 
+echo "== S36-S39: 合成事件相位 / 点击刹车（2026-11-03，移植 Mos ScrollPhase + ScrollPoster）=="
+# 背景：Smoose 早期合成的滚动事件 isContinuous=0、scrollPhase=0、momentumPhase=0，
+# 消费端（Chrome / Safari / 原生控件）看到的是「物理滚轮 + 像素增量」，于是套用自己的
+# 行量化与动量，Smoose 的曲线被二次加工 —— 同一条曲线在 Mos 里更跟手的根因之一。
+# 本轮移植 Mos 的两件事：① 合成事件带相位（isContinuous=1 + scroll/momentum phase +
+# 收尾帧）；② 左键点击立刻刹车收掉尾巴（含未走完的距离）。
+# 逻辑全部落在纯函数 / 纯结构体里（ScrollPhases.swift + ScrollAxis.brake），
+# 所以这里编译真源码直接断言，不需要逻辑副本。
+S36DIR="$WORK/s36dir"
+/bin/mkdir -p "$S36DIR"
+/bin/cat > "$S36DIR/main.swift" <<'S36SWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+func requireEq<T: Equatable>(_ a: T?, _ b: T?, _ label: String) {
+    if a != b { print("FAIL \(label): got \(String(describing: a)) want \(String(describing: b))"); failures += 1 }
+}
+
+// ---- S36 相位常量 + 字段写入 ----
+requireEq(ScrollPhaseValue.trackingBegan, ScrollPhaseValue(scroll: 1, momentum: 0), "S36a trackingBegan 必须是 scroll=1")
+requireEq(ScrollPhaseValue.trackingChanged, ScrollPhaseValue(scroll: 2, momentum: 0), "S36b trackingChanged 必须是 scroll=2")
+requireEq(ScrollPhaseValue.trackingEnded, ScrollPhaseValue(scroll: 4, momentum: 0), "S36c trackingEnded 必须是 scroll=4")
+requireEq(ScrollPhaseValue.momentumBegan, ScrollPhaseValue(scroll: 0, momentum: 1), "S36d momentumBegan 必须是 momentum=1")
+requireEq(ScrollPhaseValue.momentumChanged, ScrollPhaseValue(scroll: 0, momentum: 2), "S36e momentumChanged 必须是 momentum=2")
+requireEq(ScrollPhaseValue.momentumEnded, ScrollPhaseValue(scroll: 0, momentum: 3), "S36f momentumEnded 必须是 momentum=3")
+// 关闭开关时必须全 0：这是「关掉 = 与老版本逐字节一致」的契约，写错会让
+// 关掉开关的用户突然收到带相位的事件，行为静默改变。
+requireEq(ScrollPhaseFields.write(simulateTrackpad: false, phase: .trackingBegan), SyntheticScrollFields.none, "S36g 关闭时三个字段必须全 0")
+requireEq(ScrollPhaseFields.write(simulateTrackpad: true, phase: nil), SyntheticScrollFields.none, "S36h 开启但无相位也必须全 0")
+requireEq(ScrollPhaseFields.write(simulateTrackpad: false, phase: .momentumEnded), SyntheticScrollFields(cont: 0, scroll: 0, momentum: 0), "S36g2 关闭惯性帧同样全 0")
+let sf1 = ScrollPhaseFields.write(simulateTrackpad: true, phase: .trackingBegan)
+require(sf1.cont == 1 && sf1.scroll == 1 && sf1.momentum == 0, "S36i 开启时 cont=1 且相位正确（实际=\(sf1)）")
+let sf2 = ScrollPhaseFields.write(simulateTrackpad: true, phase: .momentumEnded)
+require(sf2.cont == 1 && sf2.scroll == 0 && sf2.momentum == 3, "S36j 惯性收尾帧字段（实际=\(sf2)）")
+
+// ---- S37 手势相位状态机 ----
+var t = ScrollPhaseTracker()
+require(t.advance(now: 1.0, posting: false, settled: true).isEmpty, "S37a 空闲时不得发任何相位帧")
+require(!t.isActive, "S37b 空闲时 isActive=false")
+t.noteInput(now: 1.0)
+require(t.isActive, "S37c 有输入后 isActive=true")
+var p = t.advance(now: 1.008, posting: true, settled: false)
+requireEq(p.body, .trackingBegan, "S37d 手势首帧必须是 trackingBegan")
+require(p.end == nil && p.interrupt == nil, "S37e 首帧不该带收尾/打断帧")
+t.noteInput(now: 1.05)
+p = t.advance(now: 1.058, posting: true, settled: false)
+requireEq(p.body, .trackingChanged, "S37f 输入间隔 0.05s 仍是 trackingChanged")
+// 输入停下超过 continuationThreshold(0.18) → 惯性段
+p = t.advance(now: 1.30, posting: true, settled: false)
+requireEq(p.body, .momentumBegan, "S37g 输入停下超过 0.18s 必须转 momentumBegan")
+p = t.advance(now: 1.40, posting: true, settled: false)
+requireEq(p.body, .momentumChanged, "S37h 惯性持续为 momentumChanged")
+p = t.advance(now: 1.45, posting: false, settled: true)
+requireEq(p.end, .momentumEnded, "S37i 惯性段收尾必须是 momentumEnded")
+require(p.body == nil, "S37j 收尾帧不带增量相位")
+require(!t.isActive, "S37k 收尾后必须回到 idle")
+require(t.advance(now: 1.46, posting: false, settled: true).isEmpty, "S37l 收尾后不得再发帧")
+
+// 亚像素帧（无增量）不得把 Began 提前消耗掉
+var t2 = ScrollPhaseTracker()
+t2.noteInput(now: 10.0)
+var p2 = t2.advance(now: 10.008, posting: false, settled: false)
+require(p2.body == nil, "S37m 无增量的帧不得发 body")
+p2 = t2.advance(now: 10.016, posting: true, settled: false)
+requireEq(p2.body, .trackingBegan, "S37n 亚像素帧之后首帧仍是 Began（begun 未被消耗）")
+
+// 尾巴没走完又滚 → 先补 MomentumEnd，再开新 Tracking
+var t3 = ScrollPhaseTracker()
+t3.noteInput(now: 20.0)
+_ = t3.advance(now: 20.01, posting: true, settled: false)
+_ = t3.advance(now: 20.30, posting: true, settled: false)
+t3.noteInput(now: 20.40)
+var p3 = t3.advance(now: 20.408, posting: true, settled: false)
+requireEq(p3.interrupt, .momentumEnded, "S37o 惯性未走完又滚必须先补 MomentumEnd")
+requireEq(p3.body, .trackingBegan, "S37p 补完打断帧再开新 tracking")
+require(p3.end == nil, "S37q 重新接管时不得同时收尾")
+
+// 距上次输入超过 separationThreshold(0.45) → 新手势，重新发 Began
+t3.noteInput(now: 21.00)
+p3 = t3.advance(now: 21.008, posting: true, settled: false)
+requireEq(p3.body, .trackingBegan, "S37r 隔太久必须算新手势并重新发 Began")
+
+// 尾巴很短、手指还没离开就到位 → TrackingEnd（不是 MomentumEnd）
+var t4 = ScrollPhaseTracker()
+t4.noteInput(now: 30.0)
+_ = t4.advance(now: 30.008, posting: true, settled: false)
+var p4 = t4.advance(now: 30.016, posting: true, settled: true)
+requireEq(p4.body, .trackingChanged, "S37s 到位帧仍带增量相位")
+requireEq(p4.end, .trackingEnded, "S37t 手指段收尾是 TrackingEnd")
+t4.reset()
+require(!t4.isActive, "S37u reset 后回到 idle")
+require(t4.advance(now: 30.1, posting: true, settled: true).isEmpty, "S37v reset 后不得再发帧")
+
+// ---- S38 点击刹车 ----
+var ax = ScrollAxis()
+ax.brake()
+require(ax.isIdle, "S38a 空轴刹车必须无害")
+var ay = ScrollAxis()
+ay.push(100)
+var emitted = 0
+for _ in 0..<3 { emitted += Int(ay.advance(dt: 0.008, tau: 0.05)) }
+require(emitted > 0, "S38b 刹车前必须已有增量投递")
+require(ay.current < 100, "S38c 刹车前必须还没到位（否则测不到刹车）")
+let stoppedAt = ay.current
+ay.brake()
+require(ay.isIdle, "S38d 刹车后必须 idle")
+require(ay.advance(dt: 0.008, tau: 0.05) == 0, "S38e 刹车后不得再投递")
+require(ay.current == stoppedAt && ay.target == stoppedAt, "S38f 刹车丢弃剩余距离、停在当前位置")
+
+if failures == 0 { print("S36-OK") } else { exit(1) }
+S36SWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -framework CoreGraphics -o "$WORK/s36" Sources/ScrollAxis.swift Sources/ScrollPhases.swift "$S36DIR/main.swift" 2>"$WORK/s36.log"; then
+  S36OUT="$("$WORK/s36" 2>&1 || true)"
+  S36FAILS="$(/bin/echo "$S36OUT" | grep '^FAIL' || true)"
+  if [ -z "$S36FAILS" ] && /bin/echo "$S36OUT" | grep -q 'S36-OK'; then
+    ok "S36-S38 相位常量/字段/状态机/刹车（S36a-j + S37a-v + S38a-f）"
+  else
+    bad "S36-S38 $S36FAILS"
+  fi
+else
+  bad "S36-S38 编译失败$(tail -3 "$WORK/s36.log")"
+fi
+
+# S39 接线守卫：逻辑对了但没接进引擎 = 没做。剥注释后再匹配，
+# 否则解释相位历史的注释里本身就含这些代码串，会自我触发。
+S39FAILS=""
+ENGNC="$(/bin/echo "$(cat "$ROOT/Sources/ScrollEngine.swift")" | /usr/bin/sed -E 's://.*$::')"
+APPNC="$(/bin/echo "$(cat "$ROOT/Sources/App.swift")" | /usr/bin/sed -E 's://.*$::')"
+VIEWSNC="$(/bin/echo "$(cat "$ROOT/Sources/Views.swift")" | /usr/bin/sed -E 's://.*$::')"
+MODELNC="$(/bin/echo "$(cat "$ROOT/Sources/Model.swift")" | /usr/bin/sed -E 's://.*$::')"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'ScrollPhaseFields.write(simulateTrackpad: phase != nil, phase: phase)' || S39FAILS="$S39FAILS S39a(post未写相位字段)"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'event.setDoubleValueField(F.phase, value: fields.scroll)' || S39FAILS="$S39FAILS S39b"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'event.setDoubleValueField(F.momentum, value: fields.momentum)' || S39FAILS="$S39FAILS S39c"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'phaseTracker.advance(now: CACurrentMediaTime(), posting: moved, settled: settled)' || S39FAILS="$S39FAILS S39d(帧循环未推进相位)"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'phaseTracker.noteInput(now: CACurrentMediaTime())' || S39FAILS="$S39FAILS S39e(输入未通知状态机)"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'axisY.brake()' || S39FAILS="$S39FAILS S39f"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'axisX.brake()' || S39FAILS="$S39FAILS S39g"
+/bin/echo "$ENGNC" | /usr/bin/grep -q 'activeAppID == "com.apple.dock"' || S39FAILS="$S39FAILS S39h(Launchpad/Dock未透传)"
+/bin/echo "$APPNC" | /usr/bin/grep -q 'addGlobalMonitorForEvents(matching: .leftMouseDown)' || S39FAILS="$S39FAILS S39i(没监听左键)"
+/bin/echo "$APPNC" | /usr/bin/grep -q 'ScrollEngine.shared.brake()' || S39FAILS="$S39FAILS S39j(左键没接刹车)"
+/bin/echo "$VIEWSNC" | /usr/bin/grep -q 'prefs.global.simulateTrackpad' || S39FAILS="$S39FAILS S39k(全局开关没接)"
+/bin/echo "$VIEWSNC" | /usr/bin/grep -q 'profile.simulateTrackpad' || S39FAILS="$S39FAILS S39l(每应用开关没接)"
+/bin/echo "$MODELNC" | /usr/bin/grep -q 'simulateTrackpad = try c.decodeIfPresent(Bool.self, forKey: .simulateTrackpad) ?? true' || S39FAILS="$S39FAILS S39m(旧配置缺键时未兜底 true)"
+if [ -z "$S39FAILS" ]; then ok "S39 引擎/UI/持久化接线（13 项）"; else bad "S39$S39FAILS"; fi
+
 echo "== H: 自动更新安全加固（2026-10-26，编译真源码断言）=="
 # 2026-10-26 加的安全加固此前一条 harness 都没有（run_tests.sh 还停在 10-23），
 # 而 HANDOFF 写着「12 项断言全部通过」—— 实际 harness 里并不存在。
@@ -1332,6 +1478,7 @@ if failures == 0 { print("H-OK") } else { exit(1) }
 HSWIFT
 if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/h" \
     Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
+    Sources/ScrollPhases.swift \
     Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift \
     Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
     Sources/TouchEvents.c "$WORK/main.swift" 2>"$WORK/h.log"; then

@@ -87,6 +87,13 @@ struct ScrollAxis {
         current = target
     }
 
+    /// 刹车：立刻停住，还没走完的距离作废（移植 Mos `ScrollPoster.brake()` 的 buffer = current）。
+    /// 用于「按下左键停止滚动」：点了就是点到了，尾巴不该继续走。
+    mutating func brake() {
+        target = current
+        sent = current
+    }
+
     /// 推进一帧，返回本帧应投递的整数像素（不足 1px 的部分累积到下一帧）
     mutating func advance(dt: Double, tau: Double) -> Int32 {
         if tau <= 0 {

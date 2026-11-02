@@ -24,6 +24,11 @@ struct ScrollProfile: Codable, Equatable {
     var smoothness: Double = 0.45
     /// 最小步长（px）：抹平极小 delta，避免「卡住不动」
     var minStep: Double = 6.0
+    /// 把合成事件标记成触控板滚动（isContinuous=1 + scroll/momentum 相位）。
+    /// 消费端（Chrome / Safari / 原生控件）收到后走「触控板像素滚动」路径，
+    /// 只认 Smoose 给出的像素量，不再套用自己的行量化/动量二次加工曲线。
+    /// 关掉则完全回到「物理滚轮 + 像素增量」的老行为。
+    var simulateTrackpad: Bool = true
     /// 按住这些修饰键时跳过接管、原样透传（CGEventFlags 位掩码）
     var bypassModifiers: UInt64 = 0
     /// 按住加速键时把距离倍率再乘上 boostFactor（Mos 的 scroll boost）
@@ -47,6 +52,7 @@ struct ScrollProfile: Codable, Equatable {
         wheelLines = try c.decodeIfPresent(Double.self, forKey: .wheelLines) ?? 1.0
         smoothness = try c.decodeIfPresent(Double.self, forKey: .smoothness) ?? 0.45
         minStep = try c.decodeIfPresent(Double.self, forKey: .minStep) ?? 6.0
+        simulateTrackpad = try c.decodeIfPresent(Bool.self, forKey: .simulateTrackpad) ?? true
         bypassModifiers = try c.decodeIfPresent(UInt64.self, forKey: .bypassModifiers) ?? 0
         boostModifiers = try c.decodeIfPresent(UInt64.self, forKey: .boostModifiers) ?? 0
         boostFactor = try c.decodeIfPresent(Double.self, forKey: .boostFactor) ?? 2.0
@@ -90,7 +96,7 @@ struct ScrollProfile: Codable, Equatable {
                 "跳过此 App": bypass]
     }()
 
-    /// 套用「预设」时保留用户自己配的加速键（修饰键 + 倍率）。
+    /// 套用「预设」时保留用户自己配的加速键（修饰键 + 倍率）与「模拟触控板滚动」开关。
 /// 设置窗口的标签页，必须和 Views.swift 里 SettingsWindow 的 .tag 一一对应。
     /// 预设表只描述曲线参数（倍率 / 顺滑度 / 步长），不描述热键配置。此前点一次
     /// 「浏览器」就把 `prefs.global` 整个换掉，用户在「按住加速」里配好的 ⌘ + 4×
@@ -99,6 +105,9 @@ struct ScrollProfile: Codable, Equatable {
         guard var p = presets[name] else { return nil }
         p.boostModifiers = current.boostModifiers
         p.boostFactor = current.boostFactor
+        // 「模拟触控板相位」是输出方式开关、不是曲线参数：和 boost 同一个理由，
+        // 套预设时必须保留，否则特意关掉它的用户点一下预设就被悄悄打开。
+        p.simulateTrackpad = current.simulateTrackpad
         return p
     }
 

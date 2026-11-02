@@ -5,6 +5,28 @@
 > 原生 Swift，零第三方依赖。
 >
 > 本文档面向接手维护的开发者，记录架构、能力、关键坑、构建方式与未决项。
+>
+> **2026-11-03 第十五轮（参照 Mos / LinearMouse 优化轮，未发版）**：对照 `caldis/Mos`
+> （Swift 重写后的 `Mos/ScrollCore/`：`ScrollCore` / `ScrollPoster` / `ScrollPhase` / `ScrollFilter` / `ScrollEvent`）
+> 与 `linearmouse/linearmouse`（`EventTransformer/SmoothedScrollingEngine`）找差距，落地三件事：
+>
+> ① **合成事件带相位**（根因修复）。早期 `post()` 写出 `isContinuous=0`、`scrollPhase=0`、
+> `momentumPhase=0` 的像素增量，消费端（Chrome / Safari / 原生 `NSScrollView`）看到的是
+> 「物理鼠标滚轮 + 像素增量」，于是套用自己的行量化与动量，Smoose 调好的曲线被二次加工 ——
+> 这就是「同一条曲线，Mos 里更跟手」的根因。现在按 Mos 的 `PhaseValueMapping` 写
+> `isContinuous=1` + tracking/momentum 相位 + 零增量收尾帧。新增 `Sources/ScrollPhases.swift`
+> （`ScrollPhaseValue` / `SyntheticScrollFields` / `ScrollPhaseFields.write` / `ScrollPhaseTracker`），
+> 两个阈值 0.18s / 0.45s 对齐 Mos；详见 SPEC §26。
+>
+> ② **点击刹车**：左键按下立刻收掉滚动尾巴（含未走完的距离），并补一帧零增量收尾事件，
+> 移植 Mos `mouseLeftEventCallBack → ScrollPoster.stop`。
+>
+> ③ **Launchpad / Dock 透传**：滚轮路径原来只放行了指针；Launchpad 寄宿在 Dock 进程
+> （前台 bundle id `com.apple.dock`），合成滚动事件在里面不被识别，补上透传。
+>
+> 新增开关「模拟触控板滚动」（默认开，per-app 可覆盖；关掉则与 1.4.2 逐字节一致）。
+> harness 增至**二十六段 `PASS=26 FAIL=0`**（新增 S36–S38 编译真源码 + S39 十三条接线守卫，
+> 8 条变异验证全部报红）。**未发版**：`/Applications/Smoose.app` 是含本功能的工作副本。
 > **最后更新：2026-10-31 第九轮（发版轮）**（发布 v1.4.0 带来三大能力落地：
 > ① 自动更新端到端真机实测闭环完成，`replaceApp` 引入注入与回滚契约，补齐 H26–H28 断言（解开 §7 长期未决项）；
 > ② 滚轮加速快捷键（Scroll Boost）全面落地，按住指定修饰键临时放大倍率，离散/平滑无缝收拢（S1–S8）；
@@ -88,12 +110,12 @@
 | 项 | 状态 |
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
-| 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**（含游戏性能检测，Mach-O sha256 `cb00dbd3105ec7da…`，`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / **`Smoose-1.4.2-pre-gameperf.app`**（含游戏功能前的最后一个可用版，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
-| 源码 | `Sources/*.swift` **13 个文件**（新增 `GamePerf.swift`，2026-11-02 `wc -l` 实测总行数以 `./build.sh` 编译清单为准；2026-11-01 时为 12 文件 3971 行，本轮新增游戏性能检测约 480 行 + Model/App/Views/ScrollEngine 改动） |
+| 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 / 游戏性能检测 / 合成事件触控板相位 / 点击刹车 全部已实现 |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**：2026-11-02 含游戏性能检测（Mach-O sha256 `cb00dbd3105ec7da…`）；**2026-11-03 第十五轮后含合成事件相位 + 点击刹车 + Dock 透传，Mach-O sha256 `f10ff7a677dbab1686639b90af85489e3227bfb3dff351f744c5e1f825d4358e`**（`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、`open -a` 启动无崩溃、`smoose://settings?tab=scroll` 弹出 560×548 设置窗），`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / `Smoose-1.4.2-pre-gameperf.app`（含游戏功能前的最后一个可用版，可回滚）/ `Smoose-1.4.2-pre-phase.app`（含本轮相位功能前的最后一个可用版，Mach-O `cb00dbd3…`，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
+| 源码 | `Sources/*.swift` **14 个文件**（2026-11-03 新增 `ScrollPhases.swift`，相位纯逻辑约 190 行；2026-11-01 时为 12 文件 3971 行，其后新增游戏性能检测约 480 行 + Model/App/Views/ScrollEngine 改动；总行数以 `./build.sh` 编译清单为准） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
-| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/S18-S24/S25-S27/S28-S31/**S32-S35**/H **二十二段**，2026-11-02 `PASS=24 FAIL=0`；H 段已补 H31–H41 游戏性能检测断言，S35 为游戏页 URL 直达守卫）、`Tests/InterpTest.swift`、`Probe/main.swift` |
+| 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/S18-S24/S25-S27/S28-S31/**S32-S35/S36-S39**/H **二十六段**，2026-11-03 `PASS=26 FAIL=0`；H 段已补 H31–H41 游戏性能检测断言，S35 为游戏页 URL 直达守卫，**S36–S39 为合成事件相位 / 点击刹车 / 接线守卫**）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
 | 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / v1.4.1 / **v1.4.2**，latest = v1.4.2；**版本号从 1.4.0 起顺延**） |
 
@@ -494,7 +516,11 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
 ## 7. 已知限制 / 未决项
 
 - **与 Mos 差异与已知限制**：
-  - 滚轮加速（Scroll Boost，1.4.0）与滚动曲线实时预览（1.4.0）已对齐 Mos。
+  - 滚轮加速（Scroll Boost，1.4.0）、滚动曲线实时预览（1.4.0）已对齐 Mos；
+    **2026-11-03 起合成事件的触控板相位（`isContinuous=1` + scroll/momentum 相位 + 零增量收尾帧）
+    与点击刹车也已对齐 Mos**（`Sources/ScrollPhases.swift`，开关「模拟触控板滚动」默认开）。
+    仍未做的三项及理由见 SPEC §26.9：LinearMouse 的速率投影（改距离语义）、
+    速度式模型 + 惯性（作废已有曲线参数）、Mos 的 `CGEventPostToPid` 直投（不赌）。
   - 侧键与手势：走 macOS 标准 HID button 3/4/5，罗技鼠标（如 G502 X、MX 等）插上直接可用，支持 13 种原生动作与每应用覆盖；Logitech HID++ 2.0 硬件 DPI 直控已支持。厂商特有的 HID++ 侧键上报与手势层维持不做。
   - 输入法切换跟随等 Mos 附属功能维持不做（不属于鼠标增强主线）。
   - ~~更新替换后若签名身份变化无提示~~ **2026-10-31 已修（P2）**：`Updater.signingAuthority` 提取新旧 bundle 的叶子证书 Authority，
@@ -509,6 +535,16 @@ SWIFTC=$(xcrun --find swiftc); SDK=$(xcrun --show-sdk-path); "$SWIFTC" -O -sdk "
   以真实驱动调用 `Updater.check` + `downloadAndInstall`，走 GitHub 真实源完整跑通 1.2.1 → 1.3.0 全流程
   （下载 → sha256 校验 → 签名与 TeamID 校验 → 替换 `/Applications/Smoose.app` → 成功就绪）。
   同时为 `replaceApp` 引入目标注入与原子回滚，并由 harness H26–H28 自动化测试守护。
+- **2026-11-03 第十五轮（参照 Mos / LinearMouse）**：新增 `Sources/ScrollPhases.swift`
+  （`ScrollPhaseValue` / `SyntheticScrollFields` / `ScrollPhaseFields.write` / `ScrollPhaseTracker`），
+  合成事件改为按手势写 `isContinuous=1` + `scrollPhase` / `momentumPhase` + 零增量收尾帧；
+  左键点击刹车（`ScrollAxis.brake()` + `NSEvent.addGlobalMonitorForEvents(.leftMouseDown)`）；
+  滚轮路径补 `com.apple.dock`（Launchpad 寄宿进程）透传。开关 `ScrollProfile.simulateTrackpad` 默认开。
+  harness 新增 S36–S39，二十六段 `PASS=26 FAIL=0`，8 条变异全部报红。详见 SPEC §26。
+  **两条真机事实**：① `CGEvent(scrollWheelEvent2Source:units:.pixel…)` 造出来的新事件
+  `isContinuous` **默认就是 1**，1.4.2 靠显式写 0 才关掉；② 相位状态机两个入口
+  （tap 回调 `noteInput` / 显示链接 `advance`）必须都用 `CACurrentMediaTime()`，
+  CVDisplayLink 的 `videoTime` 是另一套时基，混用会让 0.18s 阈值永久失效。
 - **用户提过「Dock 继续」但症状不明（2026-10-31）**：已实测确认 Dock hover 放大、光标移开复位、无粘住都正常
   （10-19 的修复在 1.2.x 仍有效），当时配置 `pointerSpeedManaged=False`、`cursorZoomEnabled=False`。
   若用户再说 Dock 问题，先问清是哪种现象（放大失效 / 粘滞 / 图标不显示），别再盲改。
