@@ -794,3 +794,7 @@ S39 十三条文本守卫（先剥注释）：`post()` 写三个字段、帧循�
   Smoose 的位置式插值已有等价尾巴，换模型等于把 1.4.0 以来调的所有曲线参数全部作废，不做。
 - **Mos 的 `CGEventPostToPid` 直投目标进程**：Mos 用它消除崩溃与「动量不跟随光标」，
   但 Smoose 的 `.cghidEventTap` 投递 + 回声守卫已经稳定跑了 20 多轮，不赌。
+
+---
+
+**2026-11-03 清理轮**：`/Applications` 的 7 个隔离备份移至 `~/.smoose-rollbacks/`（点号目录不进 Spotlight，`MANIFEST.txt` 记录版本 / sha256 / 理由），`~/Downloads` 的 2 个重复副本 + `Smoose-1.3.0.zip` 移至 `~/.Trash/smoose-cleanup-2026-11-03/`；全程 `mv` 可还原，harness 复跑 `PASS=26 FAIL=0`。

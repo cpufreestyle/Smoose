@@ -27,6 +27,10 @@
 > 新增开关「模拟触控板滚动」（默认开，per-app 可覆盖；关掉则与 1.4.2 逐字节一致）。
 > harness 增至**二十六段 `PASS=26 FAIL=0`**（新增 S36–S38 编译真源码 + S39 十三条接线守卫，
 > 8 条变异验证全部报红）。**未发版**：`/Applications/Smoose.app` 是含本功能的工作副本。
+> **2026-11-03 清理轮（收尾）**：Spotlight 搜 "sm" 的副本噪音已清——`/Applications` 的 7 个隔离备份
+> `mv` 到 `~/.smoose-rollbacks/`（点号目录不进 Spotlight，保留回滚能力），`~/Downloads` 的 2 个重复副本
+> + 1 个旧版 zip 移到 `~/.Trash/smoose-cleanup-2026-11-03/`，全程 `mv` 无 `rm`、带 MANIFEST 可还原。
+> 运行中的 `/Applications/Smoose.app`（当时 pid 78294）与桌面别名未动，harness 复跑 `PASS=26 FAIL=0`。
 > **最后更新：2026-10-31 第九轮（发版轮）**（发布 v1.4.0 带来三大能力落地：
 > ① 自动更新端到端真机实测闭环完成，`replaceApp` 引入注入与回滚契约，补齐 H26–H28 断言（解开 §7 长期未决项）；
 > ② 滚轮加速快捷键（Scroll Boost）全面落地，按住指定修饰键临时放大倍率，离散/平滑无缝收拢（S1–S8）；
@@ -111,7 +115,7 @@
 | --- | --- |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 / 游戏性能检测 / 合成事件触控板相位 / 点击刹车 全部已实现 |
-| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**：2026-11-02 含游戏性能检测（Mach-O sha256 `cb00dbd3105ec7da…`）；**2026-11-03 第十五轮后含合成事件相位 + 点击刹车 + Dock 透传，Mach-O sha256 `f10ff7a677dbab1686639b90af85489e3227bfb3dff351f744c5e1f825d4358e`**（`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、`open -a` 启动无崩溃、`smoose://settings?tab=scroll` 弹出 560×548 设置窗），`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链：`/Applications/Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / `Smoose-1.4.2-pre-gameperf.app`（含游戏功能前的最后一个可用版，可回滚）/ `Smoose-1.4.2-pre-phase.app`（含本轮相位功能前的最后一个可用版，Mach-O `cb00dbd3…`，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
+| 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**：2026-11-02 含游戏性能检测（Mach-O sha256 `cb00dbd3105ec7da…`）；**2026-11-03 第十五轮后含合成事件相位 + 点击刹车 + Dock 透传，Mach-O sha256 `f10ff7a677dbab1686639b90af85489e3227bfb3dff351f744c5e1f825d4358e`**（`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、`open -a` 启动无崩溃、`smoose://settings?tab=scroll` 弹出 560×548 设置窗），`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链（2026-11-03 清理轮已整体移至点号目录 `~/.smoose-rollbacks/`，不进 Spotlight，保留回滚能力；目录内 `MANIFEST.txt` 逐条记录版本 / build / sha256 / 体积 / 理由）：`Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / `Smoose-1.4.2-pre-gameperf.app`（含游戏功能前的最后一个可用版，可回滚）/ `Smoose-1.4.2-pre-phase.app`（含本轮相位功能前的最后一个可用版，Mach-O `cb00dbd3…`，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a |
 | 源码 | `Sources/*.swift` **14 个文件**（2026-11-03 新增 `ScrollPhases.swift`，相位纯逻辑约 190 行；2026-11-01 时为 12 文件 3971 行，其后新增游戏性能检测约 480 行 + Model/App/Views/ScrollEngine 改动；总行数以 `./build.sh` 编译清单为准） |
 | 构建 | `build.sh`（签名身份三级回退：`SMOOSE_SIGN_ID` → 自动探测本机 Apple Development 证书 → ad-hoc 并警告） |
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
@@ -121,6 +125,15 @@
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
+> **2026-11-03 清理轮（Spotlight 副本噪音收尾）**：用户截图反馈 Spotlight 搜 "sm" 出现一堆 Smoose 副本。
+> 本轮把 `/Applications` 的 7 个隔离备份整体 `mv` 到 `~/.smoose-rollbacks/`（点号开头目录不进 Spotlight，
+> 保留回滚能力；`MANIFEST.txt` 逐条记录版本 / build / sha256 / 体积 / 理由），`~/Downloads` 的 2 个重复副本
+>（与 `Smoose-1.3.0-pre-140.app` 逐字节相同的旧 1.3.0 构建，sha `d1056d36…`）+ 1 个 `Smoose-1.3.0.zip`
+>（sha256 `7db37abe…`，GitHub Release v1.3.0 已有）移到 `~/.Trash/smoose-cleanup-2026-11-03/`（同样带 MANIFEST）。
+> 全程 `mv` 无 `rm`，可还原。运行中的 `/Applications/Smoose.app`（1.4.2 工作副本，当时 pid 78294）
+> 与桌面别名未动。其他位置已复查无残留（`/Applications/Smoose.app.new` 不存在，仓库 `Probe/` 是 harness
+> 引用的活探针、`build/` `dist/` 是 gitignore 产物，均保留）。清理后 harness 复跑 `PASS=26 FAIL=0`。
+---
 > **2026-11-02 清理轮（workspace 瘦身）**：把 36 项冗余产物移到 `~/.Trash/smoose-cleanup-2026-11-02/`（含 `MANIFEST.txt`，逐条记录原路径 / 体积 / 理由，可整体拖回还原）。仓库 23M → 4.0M。
 > 归档内容：`dist/` 里 4 个旧预部署 `.app` + 9 个旧版 zip + 7 个旧 json、`/Applications` 里 9 个**未记载**的额外备份、桌面 5 个 `.MichaelClip.app.old.*` 隐藏副本 + `.DS_Store`、`/tmp/smoose_git_sync_140` 临时克隆；另 `rmdir` 了空的 `logs/`。
 > **上表记载的 5 项回滚备份链一个没动**（`-1.2.1-predeploy` / `-1.3.0-pre-140` / `-1.4.0-pre-141` / `-1.4.1-pre-deploy` / `-1.4.2-pre-deploy`），`dist/Smoose-1.4.2.zip` 保留（F 段需要）。清理后 harness 复跑 `PASS=23 FAIL=0`。
