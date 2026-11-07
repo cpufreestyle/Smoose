@@ -10,6 +10,10 @@
 App 内「关于 → 检查更新」自动升级；覆盖安装保留辅助功能授权，无需重新授权。
 每个 Release 页面都附有变更说明与安装包 sha256，可自行核对。
 
+当前最新版本 **1.4.3**（2026-11-07 发布，asset `Smoose-1.4.3.zip` 1,096,543 字节，
+sha256 `c2d6daec81b5a7507c4b573f02cfd15bc262a281dcc22615d372b3131c75b677`），
+`releases/latest` 已指向该版本。
+
 ## 功能
 
 | 功能 | 说明 |
@@ -96,6 +100,9 @@ Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
 **在 CI / 受限沙箱里构建**：Swift 宏展开需要 `swift-plugin-server`，而它自己要套 `sandbox-exec`，
 在已经禁止嵌套沙箱的环境里会报 `SwiftUIMacros.StateMacro ... malformed response`。
 这种环境用 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh`（`run_tests.sh` 同理）。普通终端不用设。
+`scripts/release.sh` 内部也会调 `build.sh`，所以在受限环境发版同样要写成
+`SMOOSE_SWIFT_EXTRA=-disable-sandbox ./scripts/release.sh --github --repo cpufreestyle/Smoose`，
+否则 SwiftUI 宏展不开会误报 `self is immutable`，且 `build/` 已被清空（详见 HANDOFF §6.1d）。
 
 源码 15 个文件：`main.swift`（纯 AppKit 入口）、`App.swift`（AppDelegate / 状态栏 / 窗口自愈）、
 `Views.swift`（界面）、`Model.swift`（配置模型）、`ScrollAxis.swift`（插值引擎，纯逻辑）、
@@ -134,6 +141,12 @@ SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agen
 
 改引擎 / 持久化 / 自动更新 / **指针加速度**代码后必须跑一遍，全部 PASS 才算完成。
 契约与断言清单见 [SPEC.md](SPEC.md)；关键坑与真机验证记录见 [HANDOFF.md](HANDOFF.md)。
+
+手动开发探针（**不进 harness**）：`Probe/HIDPPNonIdempotentRoundTrip.swift` 会短暂改变
+鼠标硬件 DPI 做非幂等写入往返（写一个不同档位 → 读回 → 写回原值 → 第三个独立会话复核），
+失败会尽力恢复原值并报非零退出码。只在需要真机验证 HID++ 写入链路时手动编译运行，
+不要放进自动回归，否则每次跑测试都会动用户硬件。真机实测
+`5400 → 5450 → 5400` 全程读回校验通过、硬件已恢复（见 HANDOFF 顶部第二十四轮）。
 
 > **没有 `--device` 选项**。指针速度改写这条链路在当前环境下没有可靠的真机断言载体
 > （CLI 装 tap 拿不到辅助功能信任、产物 strip 过符号、dylib 注入起不来），

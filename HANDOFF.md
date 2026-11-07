@@ -6,6 +6,28 @@
 >
 > 本文档面向接手维护的开发者，记录架构、能力、关键坑、构建方式与未决项。
 >
+> **2026-11-07 第二十四轮（DPI 非幂等写入实测 + 发版 v1.4.3；已发版、已提交）**：用户从
+> 待确认清单里点选「发版 / 提交」与「非幂等 DPI 往返实测」，按「先验证后发版」执行。
+> ① 新增 `Probe/HIDPPNonIdempotentRoundTrip.swift`（**手动开发探针，不进 harness**，
+> 否则每次回归都会动用户硬件）：独立只读会话读原值 → `SeizeDevice`（与 App 写入路径
+> 一致）写一个**不同的合法档位** → 读回确认 → 写回原值 → **第三个独立会话**复核。
+> 真机 `featureIndex=7 / sensor=0 / 100–25600 / 步长 50`，原值 **5400**（说明上次记录的
+> 14700 后来被切回过），`5400 → 5450 → 5400` 每步 `rc=0`、设备回显与独立读回一致；
+> 若 SET 其实没生效（旧版假绿），读回仍是 5400 会当场报红。硬件最终恢复原值、未留改动。
+> **§4.9 记的「只验过幂等写入」缺口至此补齐。**
+> ② 版本 1.4.2 → **1.4.3**（`CFBundleVersion` 9 → 10），全量 harness `PASS=59 FAIL=0`；
+> `/Applications/Smoose.app` 已部署 1.4.3（Mach-O `af84277c…`、`codesign --verify --deep
+> --strict` 通过、TeamIdentifier `6U2DQJ6Z2N` 不变，备份 `/tmp/Smoose.backup.20261107_124055.app`）。
+> ③ 代码已提交并推送：远端 `2ea1eaf..1a19d96 main -> main`（SSH 通道，第 3 次重试成功）。
+> ④ Release **v1.4.3** 已发：https://github.com/cpufreestyle/Smoose/releases/tag/v1.4.3 ，
+> asset `Smoose-1.4.3.zip` 1,096,543 字节、sha256 `c2d6daec…`；`GET /releases/latest`
+> 已指向 v1.4.3（非 draft / 非 prerelease），服务端 asset `digest` 与本地包逐字节一致；
+> `dist/Smoose-1.4.3.json` 已填好 url + sha256。
+> ⑤ 两个环境坑见 §6.1d：`release.sh` 内部会调 `build.sh`，受限环境**必须**带
+> `SMOOSE_SWIFT_EXTRA=-disable-sandbox`；代理免费节点轮换时 `gh` 的 Go 客户端在 POST 上
+> 持续 EOF / TLS 超时，改用 `curl` 直调 REST + 幂等重试才通。历史各轮写的「未发版 / 未提交」
+> 是当时状态，均已随本轮 v1.4.3 关闭。
+>
 > **2026-11-07 第二十三轮（修「光标放大开启不生效」，未发版）**：用户截图显示
 > 「快速移动鼠标时放大光标图标」开关是蓝色，但功能没生效。真机复现确认
 > **键没写错**：系统设置里点该开关时全局域只有 `CGDisableCursorLocationMagnification`
@@ -34,7 +56,8 @@
 > 两者同为 2038576 字节、仅末尾 258 字节（签名 / LC_UUID 区）不同，代码与只读数据一致
 > —— 现役包确含第二十至二十三轮全部修复（关键文案字节级反查全命中）。
 > `codesign --verify --deep --strict` 通过、TeamIdentifier 不变。
-> 复核方法与两个会误导结论的坑见 §6.1c。**仍未发版、未提交**。
+> 复核方法与两个会误导结论的坑见 §6.1c。该段记录的是复核当时的状态，
+> 现已在第二十四轮随 v1.4.3 发版并推送。
 >
 > **2026-11-07 第二十二轮（修「点打开系统设置报错」，未发版）**：用户截图
 > `You can't open the application "System Settings" because it is not responding.`
@@ -256,7 +279,7 @@
 | 发布 | `scripts/release.sh`（打 zip + 自检 + 可选发 GitHub Release） |
 | 验证 | `run_tests.sh`（harness，A/B/C/D/E/F/F2/G/G2/G2b/G2c/G3/S/S18-S24/S25-S27/S28-S31/**S32-S35/S36-S39**/H/**I** **二十七段**，2026-11-06 `PASS=27 FAIL=0`；I 段 14 项验加速度签名对 HID 参数漂移敏感（含变异验证）；H 段已补 H31–H41 游戏性能检测断言，S35 为游戏页 URL 直达守卫，**S36–S39 为合成事件相位 / 点击刹车 / 接线守卫**）、`Tests/InterpTest.swift`、`Probe/main.swift` |
 | 规格 | `SPEC.md`（契约 + 断言，见 §9 落位规则） |
-| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / v1.4.1 / **v1.4.2**，latest = v1.4.2；**版本号从 1.4.0 起顺延**） |
+| 版本源 | GitHub `cpufreestyle/Smoose`（public，已发 v1.1.0 / v1.2.0 / v1.2.1 / v1.2.2 / v1.2.3 / v1.3.0 / v1.4.0 / v1.4.1 / v1.4.2 / **v1.4.3**，**latest = v1.4.3**（2026-11-07，asset sha256 `c2d6daec…`）；**版本号从 1.4.0 起顺延**） |
 
 入口形态：**纯 AppKit**，不是 SwiftUI `App` 协议。详见 §3。
 
@@ -1037,6 +1060,32 @@ PY
 /usr/bin/codesign -dv /Applications/Smoose.app 2>&1 | /usr/bin/grep TeamIdentifier
 ```
 
+### 6.1d 2026-11-07 发版链路的两个环境坑
+
+**(a) `release.sh` 也要带 `-disable-sandbox`**（受限环境）。脚本第 53 行直接调
+`"$ROOT/build.sh"`，环境变量会继承，所以
+`SMOOSE_SWIFT_EXTRA=-disable-sandbox ./scripts/release.sh` 即可。不带时实测报
+`Sources/Views.swift:1395: error: cannot assign to property: 'self' is immutable`
+—— **不是真语法错**，是 SwiftUI `@State` 宏展不开之后的连锁误报；同一份源码带开关
+一次编译通过。⚠️ `build.sh` 开头就 `rm -rf "$BUILD"`，编译失败会把 `build/` 清空，
+所以发版前先确认现役包与备份都在（本轮已提前部署 1.4.3 + 备份
+`/tmp/Smoose.backup.20261107_124055.app`，未受影响）。
+
+**(b) 代理节点轮换时 `gh` 的 Go 客户端不稳，改用 `curl` REST + 幂等重试**。
+Shadowrocket 日志显示 `api.github.com` / `uploads.github.com` 都落在
+`DOMAIN-SUFFIX,github.com,PROXY # 🇯🇵 免费-日本N` 组，节点逐个轮换，部分节点对
+CONNECT 直接回 503 / TLS 握手 EOF。实测：`git clone` 第 7 次成功、SSH `git push`
+第 3 次成功（SSH 走 `ssh.github.com:443`，最稳）、`gh release create` **14 次全败**，
+而 `curl -X POST` 到 REST 第 12 次返回 201、asset 上传第 6 次返回 201。
+要点：
+1. 每次重试前先 GET 目标资源确认是否已成功（**超时 ≠ 失败**），避免重复建 tag；
+2. asset 必须传 `uploads.github.com`（`api.github.com/repos/.../releases/:id/assets`
+   实测返回 404）；
+3. 每次 `build.sh` 都会因 LC_UUID 变化让 zip 的 sha256 改变 —— **失败重试时不要再重建**，
+   拿同一个 zip 传到成功为止，否则 manifest / Release notes 里的 sha 会对不上；
+4. 闭环以 `GET /releases/latest` 的 asset `digest` 与本地 sha256 比对为准，
+   别只看「命令返回 0」。
+
 ---
 
 ## 7. 已知限制 / 未决项
@@ -1113,8 +1162,10 @@ PY
 - [x] **2026-11-06 加速度漂移修复（§4.5）**：签名纳入设备读数 / 8s 轮询 / IOHIDManager 插拔回调 /
   写后读回校验；harness 新增 I 段 14 项（`PASS=27 FAIL=0`）、变异验证 5 条报红、真机端到端
   6s 自愈 + 退出 App 负例；新构建已部署 `/Applications`（1.4.2，sha256 `7346f355…`）。
-  ⚠️ **尚未发版**：版本号仍是 1.4.2，Release v1.4.2 的 asset 不含本轮修复；要发版须先抬
-  `Resources/Info.plist` 版本号再跑 `release.sh`（不能用 `plutil` 直接改，会让签名与 Info.plist 不符）。
+  ✅ **2026-11-07 已随 v1.4.3 发版**：版本号抬到 1.4.3（`CFBundleVersion` 10）、
+  Release asset 与 `latest` 均已复核（见顶部第二十四轮 / §6.1d）。
+  注意仍要改**源码** `Resources/Info.plist` 再跑 `release.sh`，不能用 `plutil` 直接改
+  已签名的构建产物（会让签名与 Info.plist 不符）。
 - [x] `./build.sh` 编译通过并部署 `/Applications`（2026-10-07 首通；2026-10-22 部署 1.2.0；2026-10-27 部署含全部修复的新构建；**2026-10-31 部署 1.2.2**，见 §6.1a）
 - [x] 实机验证：滚动接管（指数曲线 / 距离守恒）、指针速度 0.5×–2×、签名授权保持
 - [x] `Probe/` 与 `Tests/` 保留（作为开发探针与离线回归）

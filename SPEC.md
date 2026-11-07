@@ -1053,4 +1053,35 @@ N_MUT / N_MUT2 / N_MUT3。真机：5400 → **14700** 端到端同步，重启�
 状态行显示待重新登录文案、无红字；冷启动点按钮 → 系统设置 `Display`、
 `Shake mouse pointer to locate` 可见、无报错弹窗。
 **未覆盖**：未真机构造读回失败负例；未实测重新登录后摇动放大效果（macOS 侧行为）。
-详见 `HANDOFF.md` §4.13。**未发版、未提交**。
+详见 `HANDOFF.md` §4.13。**该轮当时未发版，已随 v1.4.3 发布（见 §34）**。
+
+---
+
+## 34. v1.4.3 发布与 HID++ 非幂等写入往返契约（2026-11-07）
+
+**目的**：补上 §29 留下的「SET_SENSOR_DPI 只验过幂等写入」缺口，并把第 17–23 轮
+累积修复正式发版。契约不可回退：
+
+1. **非幂等写入才算验证过写入链路**。写一个**不同于当前值**的合法档位，
+   用独立读回确认值真的变了；只写当前值（幂等）时，即使 SET 报文被设备忽略，
+   读回也照样等于目标 —— 那是假绿。
+2. **探针必须与 App 写入同构**：`SeizeDevice` 独占打开、长报文
+   `[0x11, 0x01, featureIndex, 0x38, sensor, hi, lo, 0…]`、featureIndex 来自
+   `getFeature(0x2201)`，不能写死 `0x22`。
+3. **必须恢复原值并用第三个独立会话复核**，避免同连接缓存造成「恢复成功」假象；
+   任何一步失败都要尽力恢复，恢复不了明确报出原值让用户手动调回。
+4. **探针不进 harness**：会改硬件，只能手动运行。
+
+**真机结果**：`featureIndex=7 / sensor=0 / 100–25600 / 步长 50`，原值 5400，
+`5400 → 5450 → 5400`；两次 SET 均 `rc=0`、设备回显 5450 / 5400、独立读回一致，
+第三个会话最终读回 5400。
+
+**发版**：`CFBundleShortVersionString` 1.4.2 → 1.4.3、`CFBundleVersion` 9 → 10；
+harness `PASS=59 FAIL=0`；`/Applications` 部署 1.4.3（验签通过 / TeamIdentifier
+`6U2DQJ6Z2N` 不变）；远端 `2ea1eaf..1a19d96 main` 已推送；Release `v1.4.3`
+asset `Smoose-1.4.3.zip` 1,096,543 字节、sha256 `c2d6daec…`，
+`GET /releases/latest` 指向 v1.4.3 且服务端 `digest` 与本地一致。
+
+**环境坑**：`release.sh` 在受限环境必须带 `SMOOSE_SWIFT_EXTRA=-disable-sandbox`；
+代理节点轮换导致 `gh` 的写请求不稳，改用 `curl` REST + 幂等重试，
+且重试期间不得重新构建 zip（LC_UUID 会换 sha256）。详见 `HANDOFF.md` §6.1d。
