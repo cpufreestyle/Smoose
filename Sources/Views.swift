@@ -219,6 +219,82 @@ struct MenuBarPanel: View {
 
 // MARK: - 设置窗口
 
+/// 窗口拉大时让「整页 UI」等比放大，而不是把 560×520 的内容按原始点数居中留白。
+/// 纯数据计算，harness J 段可以直接断言，不需要真的开窗口 / 依赖屏幕。
+enum SettingsLayout {
+    /// 与 AppDelegate.openSettingsWindow 里 NSWindow 的初始 contentRect 一致，
+    /// 也是各 Tab 硬编码字号、420pt 内容宽度的设计基准。
+    /// 高度取 620 而不是窗口最初的 520：关于页完整内容（图标 + 诊断 + 联动 +
+    /// 自动更新 + 页脚）实测约 617pt，按 520 排版会把说明压成单行、页脚裁掉。
+    static let baseWidth: CGFloat = 560
+    static let baseHeight: CGFloat = 620
+    /// 2× 封顶：再大的窗口只留白，避免控件大到没法用。
+    static let maxScale: CGFloat = 2.0
+
+    /// 等比系数取「宽 / 高」两个方向里较小的比例，保证放大后不会把内容裁掉。
+    /// 低于基准尺寸时钳到 1（窗口 minSize 已挡住，这里是防御）。
+    static func uiScale(width: CGFloat, height: CGFloat) -> CGFloat {
+        guard width > 0, height > 0 else { return 1 }
+        return min(maxScale, max(1, min(width / baseWidth, height / baseHeight)))
+    }
+
+    /// scaleEffect 用的「逻辑布局尺寸」：先按 1/s 布局，再视觉放大 s 倍，
+    /// 放大后的视觉尺寸恰好等于窗口尺寸 —— 既铺满，又不溢出。
+    static func logicalSize(width: CGFloat, height: CGFloat) -> CGSize {
+        let s = uiScale(width: width, height: height)
+        return CGSize(width: width / s, height: height / s)
+    }
+
+    /// 本地诊断入口：解析 smoose://settings?w=…&h=… 里的窗口点数尺寸。
+    /// 没有 UI scripting 权限的环境里，用它把窗口拉大来验证等比缩放。
+    /// 只接受 300...4000 的合理尺寸，其余一律忽略，不影响正常开窗。
+    static func debugWindowSize(from url: String) -> CGSize? {
+        guard url.contains("?"),
+              let query = url.split(separator: "?", maxSplits: 1).last else { return nil }
+        var width: CGFloat?
+        var height: CGFloat?
+        for pair in query.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1)
+            guard kv.count == 2, let v = Double(kv[1]) else { continue }
+            if kv[0] == "w" { width = CGFloat(v) }
+            if kv[0] == "h" { height = CGFloat(v) }
+        }
+        guard let w = width, let h = height,
+              w >= 300, w <= 4000, h >= 300, h <= 4000 else { return nil }
+        return CGSize(width: w, height: h)
+    }
+}
+
+/// 单个标签页的内容缩放容器：只缩放「页面内容」，绝不包住 TabView 本体。
+/// macOS 的 TabView 标签栏由窗口 toolbar 参与布局，实测把整个 TabView 塞进
+/// GeometryReader + scaleEffect 后，标签栏会跑到内容区之外被裁掉（2026-11-06 真机验证）。
+private struct ScaledTabContent<Content: View>: View {
+    /// 系统标签栏浮在内容区顶部。scaleEffect 会吃掉 SwiftUI 的 safe area inset，
+    /// 内容会顶到标签栏上（真机截图：蓝色图标盖住「按应用」）。留出这段实际点数，
+    /// 再换算成逻辑点数补在缩放前，放大后正好是 36pt 的让位。
+    // 泛型 View 不支持 static stored property，所以放实例属性。
+    // 让位放在 scaleEffect「之后」：它是固定的实际点数，不参与缩放。
+    private let tabBarInset: CGFloat = 44
+
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        GeometryReader { geo in
+            // 可用高度先扣掉让位，再拿去算缩放；这样逻辑高度 = usableH/s ≥ 620，
+            // 关于页能完整排版，放大后又正好铺满 geo.size.height。
+            let usableH = max(1, geo.size.height - tabBarInset)
+            let s = SettingsLayout.uiScale(width: geo.size.width, height: usableH)
+            let logical = SettingsLayout.logicalSize(width: geo.size.width, height: usableH)
+            content()
+                .frame(width: logical.width, height: logical.height)
+                .scaleEffect(s, anchor: .topLeading)
+                .padding(.top, tabBarInset)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 struct SettingsWindow: View {
     @StateObject private var nav = NavState.shared
 
@@ -226,16 +302,16 @@ struct SettingsWindow: View {
         // 注意：使用 TabView(selection:) 时每个 tab 都必须设 .tag(n)，否则点击未设 tag 的页
         // 会让 selection 变 nil 并卡在最后一个有 tag 的页（2026-10-15 踩过）。
         TabView(selection: $nav.selectedTab) {
-            GeneralTab().tabItem { Label("滚动", systemImage: "arrow.up.and.down") }.tag(0)
-            PointerTab().tabItem { Label("指针", systemImage: "cursorarrow") }.tag(1)
-            AppRulesTab().tabItem { Label("按应用", systemImage: "macwindow.on.rectangle") }.tag(2)
-            ButtonsTab().tabItem { Label("按键", systemImage: "rectangle.3.offgrid") }.tag(3)
-            GamePerfTab().tabItem { Label("游戏", systemImage: "gamecontroller") }.tag(4)
-            AboutTab().tabItem { Label("关于", systemImage: "info.circle") }.tag(5)
+            ScaledTabContent { GeneralTab() }.tabItem { Label("滚动", systemImage: "arrow.up.and.down") }.tag(0)
+            ScaledTabContent { PointerTab() }.tabItem { Label("指针", systemImage: "cursorarrow") }.tag(1)
+            ScaledTabContent { AppRulesTab() }.tabItem { Label("按应用", systemImage: "macwindow.on.rectangle") }.tag(2)
+            ScaledTabContent { ButtonsTab() }.tabItem { Label("按键", systemImage: "rectangle.3.offgrid") }.tag(3)
+            ScaledTabContent { GamePerfTab() }.tabItem { Label("游戏", systemImage: "gamecontroller") }.tag(4)
+            ScaledTabContent { AboutTab() }.tabItem { Label("关于", systemImage: "info.circle") }.tag(5)
         }
-        // 固定 width/height 会把 NSHostingView 的约束锁死，窗口边缘拖不动；
-        // 改成下限约束，允许用户按需放大（App.swift 里 styleMask 已含 .resizable）。
-        .frame(minWidth: 560, minHeight: 520)
+        // 下限约束会传给 NSHostingView → NSWindow.minSize，窗口仍可自由拖拽放大。
+        .frame(minWidth: SettingsLayout.baseWidth, maxWidth: .infinity,
+               minHeight: SettingsLayout.baseHeight, maxHeight: .infinity)
     }
 }
 
@@ -643,7 +719,7 @@ struct GamePerfTab: View {
                 }
                 Text("回报率读自 IORegistry 的 ReportInterval，是鼠标板载配置的真实值"
                      + "（G502 X 接收器实测 1000 µs = 1000 Hz）。"
-                     + "实际传感器 DPI 存在鼠标内部配置文件里，macOS 读不到，所以这里不显示 DPI。")
+                     + "传感器 DPI 不在 IORegistry 里，改由「指针」页的 HID++ 0x2201 向设备实读。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
 
@@ -759,6 +835,9 @@ struct AboutTab: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+                // 外层容器高度固定时 SwiftUI 会把长说明压成单行并打省略号；
+                // 固定垂直尺寸让它按 420pt 正常换成两行。
+                .fixedSize(horizontal: false, vertical: true)
 
             Divider().frame(maxWidth: 420)
             HStack(alignment: .top, spacing: 24) {
@@ -960,6 +1039,39 @@ struct PointerTab: View {
     @EnvironmentObject var prefs: Preferences
     @ObservedObject private var controller = PointerController.shared
 
+    /// 光标放大：写入结果与「打开系统设置」的失败都必须可见，不能静默。
+    @State private var zoomResult: CursorZoomApplyResult?
+    @State private var zoomLaunchFailure: String?
+
+    /// 自定义 Binding：只有写后读回校验通过才更新 prefs。
+    /// 失败时不写 prefs，Toggle 读 get 会自动回弹，且不会再触发一次写入
+    /// （旧实现的 onChange(of:) 直接改状态会造成来回回弹）。
+    private var cursorZoomBinding: Binding<Bool> {
+        Binding(
+            get: { prefs.cursorZoomEnabled },
+            set: { newValue in applyCursorZoom(newValue) }
+        )
+    }
+
+    private func applyCursorZoom(_ enabled: Bool) {
+        let result = CursorZoomController.shared.apply(enabled)
+        zoomResult = result
+        if result.ok { prefs.cursorZoomEnabled = enabled }
+        // 失败：不写 prefs → 开关回弹；红字给出具体原因与重试提示。
+    }
+
+    private func openDisplaySettings() {
+        zoomLaunchFailure = nil
+        Task { @MainActor in
+            switch await DisplaySettingsLauncher.open() {
+            case .opened:
+                zoomLaunchFailure = nil
+            case .failed(let reason):
+                zoomLaunchFailure = DisplaySettingsLauncher.failureMessage(reason: reason)
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
@@ -976,21 +1088,47 @@ struct PointerTab: View {
                 Section("指针加速度") {
                     Toggle("接管并提供线性追踪（关掉 macOS 的加速曲线）", isOn: $prefs.pointerAccelManaged)
                     LabeledSlider(title: "加速度数值", value: $prefs.pointerAccelerationValue, range: 0...6, unit: "",
-                                  help: "0 = 严格线性（推荐，等于 Windows/Linux 手感）；系统默认通常 2.5")
+                                  help: "0 = 严格线性：写 -1 并启用 Sonoma+ 线性缩放（1:1，等同 Windows/Linux）；只把数值写成 0 并不会关闭加速曲线。系统默认约 2.5")
                     .disabled(!prefs.pointerAccelManaged)
                     HStack {
                         Button("取 0（线性）") { prefs.pointerAccelerationValue = 0 }
                         Button("取 2.5（接近系统默认）") { prefs.pointerAccelerationValue = 2.5 }
                     }
                     .disabled(!prefs.pointerAccelManaged)
-                    Toggle("同时应用到内置触控板", isOn: $prefs.pointerIncludeBuiltIn)
+                    Text("内建触控板由系统管理：本机实测写入 HIDMouseAcceleration = -1 后读回 0，线性缩放标志也不支持，所以它不参与加速度接管，也不会再把状态区误报成写入失败。外接鼠标 / 接收器照常接管。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Section("光标放大") {
-                    Toggle("快速移动鼠标时放大光标图标", isOn: $prefs.cursorZoomEnabled)
-                        .onChange(of: prefs.cursorZoomEnabled) { _, v in
-                            CursorZoomController.shared.apply(v)
+                    Toggle("快速移动鼠标时放大光标图标", isOn: cursorZoomBinding)
+                    if let zoomResult {
+                        Text(CursorZoomPolicy.statusMessage(zoomResult))
+                            .font(.system(size: 10))
+                            .foregroundStyle(zoomResult.ok ? Color.secondary : Color.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        // 常驻说明：避免「开关是蓝的」被误读成功能已即时生效。
+                        Text("当前显示的是系统偏好值。修改后需重新登录才生效；下方按钮可到系统设置里立即应用一次。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    HStack(spacing: 8) {
+                        Button("在系统设置里打开") { openDisplaySettings() }
+                            .font(.system(size: 11))
+                        if zoomLaunchFailure != nil {
+                            Button("重试") { openDisplaySettings() }
+                                .controlSize(.small)
                         }
-                    Text("即系统自带的「摇动鼠标指针以定位」：快速来回移动鼠标时，光标会膨胀放大，方便找到它。开关写入系统偏好，与「系统设置 → 辅助功能 → 显示」里的同名开关共享。")
+                    }
+                    if let zoomLaunchFailure {
+                        Text(zoomLaunchFailure)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text("即系统自带的「摇动鼠标指针以定位」：快速来回移动鼠标时，光标会膨胀放大，方便找到它。Smoose 只写入系统偏好，macOS 不会热加载它；在系统设置里把该开关关一次再打开可立即生效。")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1025,7 +1163,7 @@ struct PointerTab: View {
                     Text(controller.appliedDescription)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(controller.lastWriteOk ? Color.secondary : Color.red)
-                    Text("加速度存在 HID 进程内存里，重启或注销后回到系统默认；勾选「登录时启动」可开机自动套用。")
+                    Text("线性模式同时写入加速度 -1 与 HIDUseLinearScalingMouseAcceleration=1；两者缺一都仍是系统加速曲线。参数写在外部鼠标的 HID 设备实例上，内建触控板不参与写入；重新插拔 / 唤醒后会由 App 自动重套，勾选「登录时启动」可开机自动生效。")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
                 Section("罗技专属（Logitech HID++ 硬件直控）") {
@@ -1050,7 +1188,7 @@ struct PointerTab: View {
 
 struct LogitechSectionView: View {
     @ObservedObject private var logi = LogitechHIDPP.shared
-    @State private var selectedDPI: Int = 1000
+    @State private var selectedDPI: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1060,28 +1198,59 @@ struct LogitechSectionView: View {
                 Text(logi.statusMessage)
                     .font(.system(size: 11, weight: .medium))
                 Spacer()
-                Button("刷新") { logi.scan() }
+                Button("刷新") { logi.refresh() }
                     .font(.system(size: 11))
             }
+            // 只有「设置窗口可见 + 指针页可见」才保持 HID++ 长连接，离开立刻释放设备。
+            .onAppear { logi.setDPIPageVisible(true) }
+            .onDisappear { logi.setDPIPageVisible(false) }
 
+            // 只有设备真的回报了 0x2201 能力才显示档位。探测失败 / 不支持时
+            // 绝不用硬编码 [400...3200] 兜底 —— 那会让人以为写入成功了。
             if logi.isConnected {
-                HStack(spacing: 8) {
-                    Text("硬件传感器 DPI：")
-                        .font(.system(size: 11))
+                switch logi.probeState {
+                case .ready(let cap, let current, let def):
+                    HStack(spacing: 8) {
+                        Text("当前硬件 DPI：\(current)")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(logi.syncStatus)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.secondary.opacity(logi.isWatching ? 1 : 0.55))
+                    }
+                    Text("设备回报：\(cap.min)–\(cap.max) DPI · 步进 \(cap.step ?? 0)"
+                         + " · 默认 \(def) DPI")
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
-                    Picker("DPI", selection: $selectedDPI) {
-                        ForEach([400, 800, 1000, 1200, 1600, 2000, 2400, 3200], id: \.self) { dpi in
-                            Text("\(dpi) DPI").tag(dpi)
+                    HStack(spacing: 8) {
+                        Text("硬件传感器 DPI：")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Picker("DPI", selection: $selectedDPI) {
+                            ForEach(logi.selectableDPIs, id: \.self) { dpi in
+                                Text("\(dpi) DPI").tag(dpi)
+                            }
                         }
+                        .pickerStyle(.menu)
+                        .onAppear { if logi.currentDPI > 0 { selectedDPI = logi.currentDPI } }
+                        .onChange(of: logi.currentDPI) { _, v in if v > 0 { selectedDPI = v } }
+                        // 写入必须是显式动作：早先监听选中项变化自动下发，
+                        // 结果「只是打开页面」就因为同步当前值触发了一次 SET 报文。
+                        Button("应用") {
+                            guard selectedDPI > 0 else { return }
+                            logi.setDPI(selectedDPI)
+                        }
+                        .font(.system(size: 11))
                     }
-                    .pickerStyle(.menu)
-                    .onChange(of: selectedDPI) { _, newDpi in
-                        logi.setDPI(newDpi)
-                    }
+                    Text("档位取自 HID++ 0x2201 设备回报；选好点「应用」写入，写后读回确认，失败会明确报错。鼠标上的 DPI 快捷键切档后本页会自动跟随显示（每 0.3 秒读一次设备当前值），不会回写硬件；离开本页自动释放 HID++ 接口。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                case .probing:
+                    Text("正在向设备查询 DPI 能力…")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                case .idle, .unsupported, .failed:
+                    Text("未取得设备回报的 DPI 能力，不显示档位、也不下发写入。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                Text("无需常驻体积庞大的 Logi Options+，直接通过罗技 HID++ 协议向板载芯片写入 DPI 硬件预设。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -1106,7 +1275,10 @@ struct PointerDeviceRow: View {
             }
             let accel = controller.currentAcceleration(for: device)
             let res = controller.currentResolution(for: device)
-            Text(verbatim: "实时  加速度 \(String(format: "%.3f", accel / 65536))"
+            let linear = controller.currentLinearScaling(for: device)
+            let accelText = linear == 1 ? "线性 1:1" : String(format: "%.3f", accel / 65536)
+            let linearText = linear == 1 ? "开" : (linear == nil ? "无" : "关")
+            Text(verbatim: "实时  加速度 \(accelText) · 线性缩放 \(linearText)"
                 + " · 分辨率 \(Int(res / 65536))（只读）")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -1154,6 +1326,9 @@ struct OnboardingView: View {
     var onDone: () -> Void
 
     @State private var trusted = ScrollEngine.trusted(prompt: false)
+    /// 系统设置跳转失败必须可见：旧实现直接 NSWorkspace.open(url)，
+    /// 系统设置进程卡死时只会弹一句英文 "not responding"，App 自己什么都不说。
+    @State private var launchFailure: String?
     private let ticker = Timer.publish(every: 0.8, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -1170,25 +1345,32 @@ struct OnboardingView: View {
                 .multilineTextAlignment(.center)
 
             VStack(alignment: .leading, spacing: 8) {
-                step(1, "点「去授权」，macOS 会弹出系统确认框")
-                step(2, "在「辅助功能」列表里勾选 Smoose")
+                step(1, "点「去授权」，打开「隐私与安全性」")
+                step(2, "在「辅助功能」里勾选 Smoose")
                 step(3, "回到这个窗口，上面会变成绿色 ✓")
             }
             .frame(width: 360)
 
             HStack(spacing: 10) {
-                Button("去授权") {
-                    NSApp.activate(ignoringOtherApps: true)
-                    _ = ScrollEngine.trusted(prompt: true)
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
+                Button("去授权") { requestAuthorization() }
                 .buttonStyle(.borderedProminent)
+                if launchFailure != nil {
+                    Button("重试") { requestAuthorization() }
+                        .controlSize(.small)
+                }
                 Button(trusted ? "开始使用" : "稍后", action: onDone)
             }
-            Text("菜单栏图标为绿点即表示已生效，随时可在那里调参数。")
+            if let launchFailure {
+                Text(launchFailure)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 360)
+            }
+            Text("手动路径：\(AccessibilitySettingsLauncher.manualPath)。菜单栏图标为绿点即表示已生效，随时可在那里调参数。")
                 .font(.system(size: 10)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 360)
         }
         .padding(28)
         .onReceive(ticker) { _ in
@@ -1198,6 +1380,21 @@ struct OnboardingView: View {
         .onChange(of: trusted) { _, newValue in
             if newValue {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { onDone() }
+            }
+        }
+    }
+
+    /// 用带 completion 的重载接住失败：成功清除提示，失败显示具体原因 + 重试。
+    private func requestAuthorization() {
+        NSApp.activate(ignoringOtherApps: true)
+        _ = ScrollEngine.trusted(prompt: true)
+        launchFailure = nil
+        Task { @MainActor in
+            switch await AccessibilitySettingsLauncher.open() {
+            case .opened:
+                launchFailure = nil
+            case .failed(let reason):
+                launchFailure = AccessibilitySettingsLauncher.failureMessage(reason: reason)
             }
         }
     }

@@ -807,8 +807,13 @@ CBN="$(/bin/echo "$(cat "$HIDPP_SRC")" | /usr/bin/grep -c 'matchCallback = { ctx
 if [ "$CBN" != "1" ]; then S30FAILS="$S30FAILS S30g"; fi
 if [ -z "$S30FAILS" ]; then ok "S30 罗技 HID++ 事件驱动（无轮询 / 回调注册 / 引用配平）"; else bad "S30$S30FAILS"; fi
 
-# S31 指针配置通知：persist() 必须真的发通知，否则 60 秒兜底才生效，
-# 用户拖滑条要等一分钟—— 这就是原来 6 秒轮询唯一有用的场景，不能退化成没有。
+# S31 指针配置通知：persist() 必须真的发通知，用户拖滑条不能等下一个轮询周期。
+#
+# 2026-11-06 契约改写：原来 S31g 要求「兜底轮询 ≥ 30 秒」，因为那时每轮都会全量
+# 枚举 IOKit。现在枚举改由 IOHIDManager 插拔回调驱动，轮询只做「读属性 + 对漂移设备
+# 重写」，于是要求反过来 —— 必须足够短才能及时纠正 macOS 把 HIDMouseAcceleration
+# 重置回默认（静置后起步发黏的根因，见 I 段）。守卫随之改成卡新的三件事：
+# 周期 ≤ 10s、轮询不碰全量枚举、插拔回调确实注册了。
 PC_SRC="$ROOT/Sources/PointerController.swift"
 MD_SRC="$ROOT/Sources/Model.swift"
 S31FAILS=""
@@ -818,13 +823,20 @@ S31FAILS=""
 /bin/echo "$(cat "$PC_SRC")" | /usr/bin/grep -q 'addObserver(forName: .smoosePointerConfigChanged' || S31FAILS="$S31FAILS S31d"
 # 签名判空必须有：没判空的话每次 persist（哪怕改的是滚动参数）都会重发通知 → 又变回轮询
 /bin/echo "$(cat "$MD_SRC")" | /usr/bin/grep -q 'pointerSig != lastPersistedPointerSignature' || S31FAILS="$S31FAILS S31e"
-# 兜底轮询必须从 6 秒拉长（否则事件驱动白做）
 POLLSEC="$(/bin/echo "$(cat "$PC_SRC")" | /usr/bin/sed -nE 's/.*scheduledTimer\(withTimeInterval: ([0-9.]+).*/\1/p')"
 if [ -z "$POLLSEC" ]; then S31FAILS="$S31FAILS S31f"; fi
 if [ -n "$POLLSEC" ]; then
-  /usr/bin/awk -v v="$POLLSEC" 'BEGIN { exit !(v+0 >= 30.0) }' || S31FAILS="$S31FAILS S31g"
+  # 周期必须够短：30/60 秒会让「系统重置加速度」的窗口长到用户以为鼠标坏了
+  /usr/bin/awk -v v="$POLLSEC" 'BEGIN { exit !(v+0 > 0 && v+0 <= 10.0) }' || S31FAILS="$S31FAILS S31g"
 fi
-if [ -z "$S31FAILS" ]; then ok "S31 指针配置事件驱动（通知 / 签名判空 / 兜底拉长）"; else bad "S31$S31FAILS"; fi
+# 轮询里必须是 apply(force:false)（只读属性），不是 refresh（全量枚举）
+/bin/echo "$(cat "$PC_SRC")" | /usr/bin/grep -q 'self.apply(force: false)' || S31FAILS="$S31FAILS S31h"
+# 设备插拔 / 重枚举必须有事件驱动，不能只靠轮询
+/bin/echo "$(cat "$PC_SRC")" | /usr/bin/grep -q 'IOHIDManagerRegisterDeviceMatchingCallback' || S31FAILS="$S31FAILS S31i"
+/bin/echo "$(cat "$PC_SRC")" | /usr/bin/grep -q 'IOHIDManagerRegisterDeviceRemovalCallback' || S31FAILS="$S31FAILS S31j"
+# 签名必须纳入设备实际读数（I 段有行为级断言，这里只是防误删的文本守卫）
+/bin/echo "$(cat "$PC_SRC")" | /usr/bin/grep -q 'PointerAccelSignature.make' || S31FAILS="$S31FAILS S31k"
+if [ -z "$S31FAILS" ]; then ok "S31 指针配置事件驱动（通知 / 短轮询 / 插拔回调 / 读数签名）"; else bad "S31$S31FAILS"; fi
 
 echo "== S32-S34: 更新流程的菜单栏出口（2026-11-01，编译真 Updater.swift 断言）=="
 # 背景：用户从菜单栏点「下载并安装」，装完却没有任何反馈 —— readyToRelaunch
@@ -912,7 +924,9 @@ VIEWSNC="$(/bin/echo "$(cat "$VIEWS_SRC")" | /usr/bin/sed -E 's://.*$::')"
 GPVIEW="$(/usr/bin/awk '/^struct GamePerfTab/,/^}$/' "$VIEWS_SRC")"
 /bin/echo "$VIEWSNC" | /usr/bin/grep -q 'GamePerfTab()' || S35FAILS="$S35FAILS S35a"
 /bin/echo "$VIEWSNC" | /usr/bin/grep -q 'Label("游戏"' || S35FAILS="$S35FAILS S35b"
-/bin/echo "$VIEWSNC" | /usr/bin/grep -qE 'GamePerfTab\(\)\.tabItem \{ Label\("游戏", systemImage: "gamecontroller"\) \}\.tag\(4\)' || S35FAILS="$S35FAILS S35c"
+# 2026-11-06 起每个页都包一层 ScaledTabContent（窗口放大时等比缩放），
+# 守卫跟着改成校验「缩放容器 + 标签 + tag」三者仍绑在同一页上，不是放宽成只查关键词。
+/bin/echo "$VIEWSNC" | /usr/bin/grep -qE 'ScaledTabContent \{ GamePerfTab\(\) \}\.tabItem \{ Label\("游戏", systemImage: "gamecontroller"\) \}\.tag\(4\)' || S35FAILS="$S35FAILS S35c"
 # URL 处理器必须真的去解析 tab，否则 smoose://settings?tab=game 只会开窗、不切页
 APPNC="$(/bin/echo "$(cat "$ROOT/Sources/App.swift")" | /usr/bin/sed -E 's://.*$::')"
 /bin/echo "$APPNC" | /usr/bin/grep -q 'SettingsTab.fromURL(url)' || S35FAILS="$S35FAILS S35d"
@@ -1479,7 +1493,7 @@ HSWIFT
 if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/h" \
     Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
     Sources/ScrollPhases.swift \
-    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift Sources/SettingsLauncher.swift \
     Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
     Sources/TouchEvents.c "$WORK/main.swift" 2>"$WORK/h.log"; then
   # 变异验证（2026-11-02）抓到的假绿：只 grep '^FAIL' 时，二进制崩溃
@@ -1507,6 +1521,1226 @@ SMOOSE_H_REAL="/Applications/Smoose.app" "$HMA/Contents/MacOS/h" 2>&1)" || HRC2=
   if [ -z "$HFAILS" ]; then ok "H 安全加固（https 强制 / Team ID / sha256 / 按拒因断言 + Mach-O 前置）"; else bad "H $HFAILS"; fi
 else
   bad "H 编译失败$(tail -3 "$WORK/h.log")"
+fi
+
+echo "== I: 加速度接管签名对 HID 参数漂移敏感（2026-11-06，编译真 PointerController.swift）=="
+# 背景（用户 2026-11-06 反馈「鼠标静置后再动起步发黏、慢慢恢复正常」）：
+# 接管加速度=0 依赖 HID 参数持续保持。鼠标省电挂起 / 重枚举后 macOS 把
+# HIDMouseAcceleration 恢复成默认 163840(2.5)，配置值和 registryID 都没变 ——
+# 旧签名恰好只由这两样组成，于是 apply(force:false) 永久短路，再也不纠正。
+# 实测：罗技接收器两个 HID 接口，一个 0、一个 2.5，且两者都可写。
+# I 段验的是「决策输入」（签名），不是端到端 IOKit 写入；后者由真机探针覆盖。
+/bin/mkdir -p "$WORK/idir"
+/bin/cat > "$WORK/idir/main.swift" <<'ISWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+
+func snap(_ readings: [(rid: UInt64, current: Double?)], value: Double = 0.0,
+          managed: Bool = true, include: Bool = true) -> PointerAccelSnapshot {
+    PointerAccelSnapshot(managed: managed, value: value,
+                         includeBuiltIn: include, readings: readings)
+}
+func sig(_ s: PointerAccelSnapshot) -> String { PointerAccelSignature.make(s) }
+
+// 实况：用户开了「接管加速度 = 0」，两个 USB Receiver 接口都已正确写成 0
+let clean: [(rid: UInt64, current: Double?)] = [
+    (rid: 4294972324, current: 0.0), (rid: 4294972593, current: 0.0)]
+let cleanSig = sig(snap(clean))
+
+require(cleanSig == sig(snap(clean)), "I1 同输入签名幂等（短路仍有效，不每轮白写）")
+
+// ★核心反例：系统把第二个接口重置成默认 2.5，配置与 rid 完全没变。
+// 旧实现在这里返回相同签名 → 永久短路 → 这就是静置后手感变黏的根因。
+let drifted: [(rid: UInt64, current: Double?)] = [
+    (rid: 4294972324, current: 0.0), (rid: 4294972593, current: 163840.0)]
+require(cleanSig != sig(snap(drifted)), "I2 HID 参数漂移必须改变签名（旧 bug 在此假绿）")
+
+let drift1: [(rid: UInt64, current: Double?)] = [
+    (rid: 4294972324, current: 163840.0), (rid: 4294972593, current: 0.0)]
+require(cleanSig != sig(snap(drift1)), "I3 第一个接口漂移也要能发现")
+require(sig(snap(drift1)) != sig(snap(drifted)), "I4 不同接口漂移必须可区分")
+
+require(cleanSig != sig(snap(clean, value: 1.5)), "I5 用户改加速度数值要改变签名")
+require(cleanSig != sig(snap(clean, include: false)), "I6 includeBuiltIn 要参与签名")
+require(cleanSig != sig(snap(clean, managed: false)), "I7 managed 要参与签名")
+require(cleanSig != sig(snap([(rid: 4294972324, current: 0.0)])), "I8 设备减少要改变签名")
+require(cleanSig != sig(snap(clean + [(rid: 4294973000, current: 0.0)])), "I9 设备增加要改变签名")
+
+// 设备枚举顺序不稳定不能导致签名抖动，否则每 8 秒都会误判成漂移
+require(sig(snap(Array(clean.reversed()))) == cleanSig, "I10 设备顺序无关")
+
+// 读不到参数的设备：稳定、且与「读到 0」不同
+let withNil: [(rid: UInt64, current: Double?)] = [
+    (rid: 4294972324, current: 0.0), (rid: 4294972593, current: nil)]
+require(sig(snap(withNil)) == sig(snap(withNil)), "I11 nil 读数稳定")
+require(sig(snap(withNil)) != cleanSig, "I11b nil 与 0 必须区分")
+
+// 小数抖动（IOFixed 换算残差）不能让签名每轮都变
+let jitter: [(rid: UInt64, current: Double?)] = [
+    (rid: 4294972324, current: 0.4), (rid: 4294972593, current: 0.0)]
+require(sig(snap(jitter)) == cleanSig, "I12 亚 1 计数抖动不构成漂移")
+
+// apply() 写完保存的是「全符合期望」的签名；它必须等于全符合时的读数签名，
+// 否则下一轮永远不相等 → 每 8 秒白写一次。
+let settled: [(rid: UInt64, current: Double?)] = [
+    (rid: 4294972324, current: 0.0), (rid: 4294972593, current: 0.0)]
+require(sig(snap(settled)) == cleanSig, "I13 期望签名与全符合读数相等（否则短路失效）")
+require(sig(snap(settled)) != sig(snap(drifted)), "I14 期望签名仍能抓住漂移")
+
+if failures == 0 { print("I-OK") } else { exit(1) }
+ISWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/i" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
+    Sources/ScrollPhases.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift Sources/SettingsLauncher.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/idir/main.swift" 2>"$WORK/i.log"; then
+  IRC=0
+  IOUT="$("$WORK/i" 2>&1)" || IRC=$?
+  IFAILS="$(/bin/echo "$IOUT" | grep '^FAIL' || true)"
+  if [ "$IRC" != "0" ]; then IFAILS="$IFAILS I_EXIT(rc=$IRC 非零退出/崩溃)"; fi
+  /bin/echo "$IOUT" | grep -q 'I-OK' || IFAILS="$IFAILS I_NOMARK(缺 I-OK 完成标记)"
+  if [ -z "$IFAILS" ]; then ok "I 加速度签名（漂移敏感 / 幂等 / 顺序无关，14 项）"; else bad "I $IFAILS"; fi
+else
+  bad "I 编译失败$(tail -3 "$WORK/i.log")"
+fi
+
+echo "== J: 设置窗口放大后内容等比联动（2026-11-06，编译真 Views.swift）=="
+# 背景（用户 2026-11-06 反馈「页面放大以后，内容没放大」）：窗口可 resizable，
+# 但根视图只有 minWidth/minHeight，各 Tab 的字号 / 间距 / 420pt 内容宽度全是硬编码点数，
+# 于是内容始终按原始点数居中。J 段验的是缩放决策纯函数，不依赖屏幕。
+# 设计基准 560×620：620 是「关于」页完整内容的实测高度（按 520 排版会压行 + 裁页脚）。
+# 接线守卫：纯函数全绿不代表界面真的用上了。六个页必须都包 ScaledTabContent，
+# 且 TabView 必须是根视图 —— 真机验证过，把整个 TabView 包进缩放容器会裁掉系统标签栏。
+JVIEWS="$(/bin/echo "$(/bin/cat "$ROOT/Sources/Views.swift")" | /usr/bin/sed -E 's://.*$::')"
+JWFAILS=""
+NSCALED="$(/bin/echo "$JVIEWS" | /usr/bin/grep -c 'ScaledTabContent {' || true)"
+[ "$NSCALED" = "6" ] || JWFAILS="$JWFAILS 缩放容器数=$NSCALED(应为6)"
+for t in 0 1 2 3 4 5; do
+  /bin/echo "$JVIEWS" | /usr/bin/grep -qF ".tag($t)" || JWFAILS="$JWFAILS 缺tag$t"
+done
+/bin/echo "$JVIEWS" | /usr/bin/grep -qF 'TabView(selection: $nav.selectedTab)' \
+  || JWFAILS="$JWFAILS TabView非根视图"
+if [ -z "$JWFAILS" ]; then ok "J_W 六页全部接入缩放且 TabView 保持根视图（接线）"; else bad "J_W$JWFAILS"; fi
+/bin/mkdir -p "$WORK/jdir"
+/bin/cat > "$WORK/jdir/main.swift" <<'JSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+func near(_ a: CGFloat, _ b: CGFloat) -> Bool { abs(Double(a - b)) < 1e-9 }
+
+// 旧行为哨兵：修复前「窗口变大、内容恒 1×」。变异验证时把 uiScale 换成它，
+// 下面这些断言必须报红，否则就是假绿。
+func oldScale(_ w: CGFloat, _ h: CGFloat) -> CGFloat { 1 }
+
+require(near(SettingsLayout.uiScale(width: 560, height: 620), 1), "J1 基准尺寸不放大")
+require(near(SettingsLayout.uiScale(width: 1120, height: 1240), 2), "J2 窗口翻倍内容必须翻倍")
+let shot = SettingsLayout.uiScale(width: 1080, height: 1002)
+require(shot > 1.5 && shot < 2, "J3 大窗口 1080×1002 应放大到约 1.62×")
+require(shot != oldScale(1080, 1002), "J4 新缩放必须与旧的恒 1× 行为不同")
+// 只变一个方向时不能按那个方向放大 —— 否则另一个方向的内容会被裁掉。
+require(near(SettingsLayout.uiScale(width: 1080, height: 620), 1), "J5 只加宽时按高度取 min")
+require(near(SettingsLayout.uiScale(width: 560, height: 1002), 1), "J6 只加高时按宽度取 min")
+require(near(SettingsLayout.uiScale(width: 4000, height: 4000), 2), "J7 2× 封顶")
+require(near(SettingsLayout.uiScale(width: 300, height: 300), 1), "J8 小于基准钳到 1")
+require(near(SettingsLayout.uiScale(width: 0, height: 520), 1), "J9 0 宽防御")
+require(near(SettingsLayout.uiScale(width: 560, height: -1), 1), "J10 负高防御")
+
+// 关键不变量：logicalSize × s == 窗口尺寸，放大后正好铺满、既不裁切也不留白。
+let dims: [(CGFloat, CGFloat)] = [(560, 620), (1080, 1002), (1120, 1240),
+                                  (4000, 4000), (1080, 620), (700, 900), (300, 300)]
+for (w, h) in dims {
+    let s = SettingsLayout.uiScale(width: w, height: h)
+    let l = SettingsLayout.logicalSize(width: w, height: h)
+    require(near(l.width * s, w), "J11 \(Int(w))×\(Int(h)) 放大后宽度正好铺满")
+    require(near(l.height * s, h), "J12 \(Int(w))×\(Int(h)) 放大后高度正好铺满")
+    require(l.width >= SettingsLayout.baseWidth - 0.001 || near(s, 1),
+            "J13 \(Int(w))×\(Int(h)) 逻辑宽度不得窄于设计基准（否则排版换行错乱）")
+}
+let l2 = SettingsLayout.logicalSize(width: 1120, height: 1240)
+require(near(l2.width, 560) && near(l2.height, 620), "J14 2× 窗口逻辑尺寸回到 560×620")
+// 1080×1002 是「高度」这一侧更紧（1002/620 < 1080/560），所以逻辑高度精确回到
+// 基准 620、逻辑宽度略大于 560。断言写死宽度 560 是错的，这里卡的是「哪一侧受限」。
+let lshot = SettingsLayout.logicalSize(width: 1080, height: 1002)
+require(near(lshot.height, SettingsLayout.baseHeight), "J15 截图尺寸逻辑高度回到基准 620")
+require(lshot.width >= SettingsLayout.baseWidth, "J15b 逻辑宽度不得小于基准（不压缩排版）")
+
+// 诊断入口解析：合法尺寸要能取到，非法 / 不完整一律忽略（不能把窗口设成 0×0）。
+let dbg = SettingsLayout.debugWindowSize(from: "smoose://settings?w=1080&h=1002")
+require(dbg?.width == 1080 && dbg?.height == 1002, "J16 诊断尺寸解析")
+let dbg2 = SettingsLayout.debugWindowSize(from: "smoose://settings?tab=about&h=780&w=840")
+require(dbg2?.width == 840 && dbg2?.height == 780, "J17 参数顺序无关且可带 tab")
+require(SettingsLayout.debugWindowSize(from: "smoose://settings") == nil, "J18 无 query 返回 nil")
+require(SettingsLayout.debugWindowSize(from: "smoose://settings?w=1080") == nil, "J19 缺 h 返回 nil")
+require(SettingsLayout.debugWindowSize(from: "smoose://settings?w=-5&h=780") == nil, "J20 负数被拒")
+require(SettingsLayout.debugWindowSize(from: "smoose://settings?w=99999&h=780") == nil, "J21 超范围被拒")
+require(SettingsLayout.debugWindowSize(from: "smoose://settings?w=abc&h=780") == nil, "J22 非数字被拒")
+
+if failures == 0 { print("J-OK") } else { exit(1) }
+JSWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/j" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
+    Sources/ScrollPhases.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift Sources/SettingsLauncher.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/jdir/main.swift" 2>"$WORK/j.log"; then
+  JRC=0
+  JOUT="$("$WORK/j" 2>&1)" || JRC=$?
+  JFAILS="$(/bin/echo "$JOUT" | grep '^FAIL' || true)"
+  if [ "$JRC" != "0" ]; then JFAILS="$JFAILS J_EXIT(rc=$JRC 非零退出/崩溃)"; fi
+  /bin/echo "$JOUT" | grep -q 'J-OK' || JFAILS="$JFAILS J_NOMARK(缺 J-OK 完成标记)"
+  if [ -z "$JFAILS" ]; then ok "J 窗口放大内容等比联动（含封顶/裁切/诊断入口，23 项）"; else bad "J $JFAILS"; fi
+else
+  bad "J 编译失败$(tail -3 "$WORK/j.log")"
+fi
+
+# 变异验证：把 uiScale 换回修复前的「恒 1×」，J 段必须报红。
+# 只跑正常路径全绿不算验证过 —— 这一趟就是负例载体（2026-11-02 起的项目约定）。
+/bin/mkdir -p "$WORK/jmut"
+/usr/bin/sed 's|return min(maxScale, max(1, min(width / baseWidth, height / baseHeight)))|return 1 // MUTANT|' \
+    Sources/Views.swift > "$WORK/jmut/Views.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/jmut/Views.swift"; then
+  bad "J_MUT 变异注入失败（前置没造出来，不能算验证过）"
+elif "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -I "$WORK/jmut" -I Sources -o "$WORK/jm" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
+    Sources/ScrollPhases.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift "$WORK/jmut/Views.swift" Sources/SettingsLauncher.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/jdir/main.swift" 2>"$WORK/jm.log"; then
+  MRC=0
+  MOUT="$("$WORK/jm" 2>&1)" || MRC=$?
+  # 必须卡具体断言，不能只卡「有没有报错」这种恒成立命题。
+  MMISSES=""
+  for CASE in J2 J3 J4 J14 J15; do
+    /bin/echo "$MOUT" | grep -q "^FAIL $CASE" || MMISSES="$MMISSES $CASE"
+  done
+  if [ "$MRC" = "0" ] || [ -n "$MMISSES" ]; then
+    bad "J_MUT 恒 1× 旧实现没被抓红(rc=$MRC 漏报:$MMISSES)"
+  else
+    ok "J_MUT 变异验证（旧恒 1× 实现被 J2/J3/J4/J14/J15 抓红）"
+  fi
+else
+  bad "J_MUT 编译失败$(tail -3 "$WORK/jm.log")"
+fi
+
+# ---------------------------------------------------------------------------
+# K 段：关闭加速的正确语义（2026-11-06 二次纠正）
+# 用户连续两轮反馈「静止后起步发黏没修好」：静置 70 秒采样读数一直是 0，
+# 把全部 HID 服务也写成 0 后用户仍反馈「还是黏」→ 根因不是「值被重置」，
+# 而是 0 只代表「最小加速度」，系统仍走低速增益 <1 的加速曲线。
+# LinearMouse 源码确认：线性 = 加速度 -1（IOFixed -65536）
+# + HIDUseLinearScalingMouseAcceleration=1（Sonoma+ 设备实例）。
+# K 段验决策纯函数与签名；端到端写入由真机探针覆盖。
+# ---------------------------------------------------------------------------
+/bin/mkdir -p "$WORK/kdir"
+/bin/cat > "$WORK/kdir/main.swift" <<'KSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: Bool, _ label: String) { if !c { print("FAIL \(label)"); failures += 1 } }
+
+let lin = PointerAccelPolicy.plan(value: 0)
+require(lin.ioFixed == -65536, "K1 线性模式加速度必须是 -1（IOFixed -65536），不是 0")
+require(lin.linear == 1, "K2 线性模式必须启用 HIDUseLinearScalingMouseAcceleration=1")
+require(PointerAccelPolicy.isLinear(value: 0), "K3 value=0 判定为线性")
+require(!PointerAccelPolicy.isLinear(value: 2.5), "K3b value>0 判定为自定义加速曲线")
+let sys = PointerAccelPolicy.plan(value: 2.5)
+require(sys.ioFixed == 163840, "K4 2.5 → IOFixed 163840")
+require(sys.linear == 0, "K5 自定义加速时必须关掉线性缩放标志")
+require(lin.ioFixed != 0 && lin.linear != 0, "K6 线性模式与「只写 0」旧实现必须不同（旧 bug 在此假绿）")
+require(PointerAccelPolicy.plan(value: 0.00001).ioFixed == -65536, "K7 极小正值仍按线性处理")
+require(PointerAccelPolicy.plan(value: 6).ioFixed == 393216, "K8 上限 6 → 393216")
+
+func snap(_ readings: [(rid: UInt64, current: Double?)],
+          _ linear: [(rid: UInt64, flag: Int?)] = [],
+          value: Double = 0) -> PointerAccelSnapshot {
+    PointerAccelSnapshot(managed: true, value: value, includeBuiltIn: true,
+                         readings: readings, linear: linear)
+}
+func sig(_ s: PointerAccelSnapshot) -> String { PointerAccelSignature.make(s) }
+let base: [(rid: UInt64, current: Double?)] = [(rid: 1, current: -65536.0), (rid: 2, current: -65536.0)]
+let linOn: [(rid: UInt64, flag: Int?)] = [(rid: 1, flag: 1), (rid: 2, flag: 1)]
+let clean = sig(snap(base, linOn))
+require(clean == sig(snap(base, linOn)), "K9 签名幂等（无漂移时短路仍有效）")
+let linOff: [(rid: UInt64, flag: Int?)] = [(rid: 1, flag: 0), (rid: 2, flag: 1)]
+require(clean != sig(snap(base, linOff)), "K10 线性标志漂移必须改变签名")
+require(clean != sig(snap(base, [(rid: 1, flag: nil), (rid: 2, flag: 1)])), "K11 标志丢失(nil)与 1 必须区分")
+require(clean != sig(snap(base, [])), "K12 完全不采集标志（旧实现）与采集必须区分")
+require(clean == sig(snap(Array(base.reversed()), Array(linOn.reversed()))), "K13 设备顺序无关")
+require(clean != sig(snap([(rid: 1, current: 0), (rid: 2, current: 0)], linOn)), "K14 加速度被改回 0 也要抓到")
+
+// 本机实况：USB Receiver 写入线性键回显成功、读回仍是 null（hidutil 整数/布尔都试过）。
+// LinearMouse 的回退是「不支持就只靠 -1」，绝不能把这种情况判成写入失败。
+let native = PointerAccelPolicy.linearOutcome(before: nil, after: nil, expected: 1)
+require(!native.supported && native.settled == nil, "K15 设备不支持线性键时识别为回退")
+require(native.ok, "K16 不支持线性键不能判失败（否则常驻红色警告 + 失败态短路）")
+require(!native.supported && native.ok, "K19 回退路径整体仍算成功（-1 已禁用加速）")
+let supportedOK = PointerAccelPolicy.linearOutcome(before: 0, after: 1, expected: 1)
+require(supportedOK.supported && supportedOK.ok && supportedOK.settled == 1, "K17 支持且写入成功存期望值")
+let supportedFail = PointerAccelPolicy.linearOutcome(before: 0, after: 0, expected: 1)
+require(!supportedFail.ok && supportedFail.settled == 0, "K18 支持但写入失败要判红并存实际值以重试")
+
+if failures == 0 { print("K-OK") } else { exit(1) }
+KSWIFT
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 -I Sources -o "$WORK/k" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift Sources/PointerController.swift \
+    Sources/ScrollPhases.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift Sources/SettingsLauncher.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/kdir/main.swift" 2>"$WORK/k.log"; then
+  KRC=0
+  KOUT="$("$WORK/k" 2>&1)" || KRC=$?
+  KFAILS="$(/bin/echo "$KOUT" | grep '^FAIL' || true)"
+  if [ "$KRC" != "0" ]; then KFAILS="$KFAILS K_EXIT(rc=$KRC 非零退出/崩溃)"; fi
+  /bin/echo "$KOUT" | grep -q 'K-OK' || KFAILS="$KFAILS K_NOMARK(缺 K-OK 完成标记)"
+  if [ -z "$KFAILS" ]; then ok "K 关闭加速语义：线性 -1 + 线性缩放标志 + 回退 + 签名（20 项）"; else bad "K $KFAILS"; fi
+else
+  bad "K 编译失败$(tail -3 "$WORK/k.log")"
+fi
+
+# 接线守卫：K 段只验纯函数，必须另有守卫确认 apply/restore 真的写这两个键，
+# 否则「纯函数全绿、运行时仍写 0」又是一次假绿。
+PCNC="$(/bin/cat Sources/PointerController.swift)"
+KWFAILS=""
+/bin/echo "$PCNC" | /usr/bin/grep -q 'let plan = PointerAccelPolicy.plan(value: want)' || KWFAILS="$KWFAILS KW1"
+/bin/echo "$PCNC" | /usr/bin/grep -q 'PointerAccelPolicy.linearKey as CFString' || KWFAILS="$KWFAILS KW2"
+/bin/echo "$PCNC" | /usr/bin/grep -q 'let okAccel = IOHIDServiceClientSetProperty' || KWFAILS="$KWFAILS KW3"
+/bin/echo "$PCNC" | /usr/bin/grep -q 'let outcome = PointerAccelPolicy.linearOutcome' || KWFAILS="$KWFAILS KW4"
+/bin/echo "$PCNC" | /usr/bin/grep -q '&& outcome.ok' || KWFAILS="$KWFAILS KW5"
+/bin/echo "$PCNC" | /usr/bin/grep -q 'linear: readings.map' || KWFAILS="$KWFAILS KW6"
+/bin/echo "$PCNC" | /usr/bin/grep -q 'let flag = linearBaselines\[device.registryID\] ?? 0' || KWFAILS="$KWFAILS KW7"
+# 恢复基线必须来自全局 HIDParameters；用「设备当前读数」会把已接管的 -1 当默认值。
+/bin/echo "$PCNC" | /usr/bin/grep -q 'let accel = Self.systemDefaultAcceleration()' || KWFAILS="$KWFAILS KW8"
+/bin/echo "$PCNC" | /usr/bin/grep -q '"IOService:/IOResources/IOHIDSystem"' || KWFAILS="$KWFAILS KW9"
+if [ -z "$KWFAILS" ]; then ok "K_W 接线守卫（apply 双写 / 读回 / 签名 / restore / 全局默认基线）"; else bad "K_W $KWFAILS"; fi
+
+# 变异验证：把 plan 换回「线性也写 0、不设线性缩放」的旧实现，K 段必须报红。
+/bin/mkdir -p "$WORK/kmut"
+/usr/bin/sed 's|if value <= 0.0001 { return (disabledIOFixed, 1) }|if value <= 0.0001 { return (0, 0) } // MUTANT|' \
+    Sources/PointerController.swift > "$WORK/kmut/PointerController.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/kmut/PointerController.swift"; then
+  bad "K_MUT 变异注入失败（前置没造出来，不能算验证过）"
+elif "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -I "$WORK/kmut" -I Sources -o "$WORK/km" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift "$WORK/kmut/PointerController.swift" \
+    Sources/ScrollPhases.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift Sources/SettingsLauncher.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/kdir/main.swift" 2>"$WORK/km.log"; then
+  KMRC=0
+  KMOUT="$("$WORK/km" 2>&1)" || KMRC=$?
+  KMMISSES=""
+  for CASE in K1 K2 K6; do
+    /bin/echo "$KMOUT" | grep -q "^FAIL $CASE" || KMMISSES="$KMMISSES $CASE"
+  done
+  if [ "$KMRC" = "0" ] || [ -n "$KMMISSES" ]; then
+    bad "K_MUT 旧「恒写 0」实现没被抓红(rc=$KMRC 漏报:$KMMISSES)"
+  else
+    ok "K_MUT 变异验证（旧恒写 0 实现被 K1/K2/K6 抓红）"
+  fi
+else
+  bad "K_MUT 编译失败$(tail -3 "$WORK/km.log")"
+fi
+
+# 第二趟变异：把「设备不支持线性键 = 回退成功」改成判失败，K16/K19 必须报红。
+# 这一条守的是真机截图里那排红色「写入未生效」——不能把硬件能力缺失报成写入失败。
+/usr/bin/sed 's|if !supported { return (false, nil, true) }|if !supported { return (false, nil, false) } // MUTANT|' \
+    Sources/PointerController.swift > "$WORK/kmut/PointerController.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/kmut/PointerController.swift"; then
+  bad "K_MUT2 变异注入失败（前置没造出来，不能算验证过）"
+elif "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -I "$WORK/kmut" -I Sources -o "$WORK/km2" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift "$WORK/kmut/PointerController.swift" \
+    Sources/ScrollPhases.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift Sources/SettingsLauncher.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/kdir/main.swift" 2>"$WORK/km2.log"; then
+  KM2RC=0
+  KM2OUT="$("$WORK/km2" 2>&1)" || KM2RC=$?
+  KM2MISSES=""
+  for CASE in K16 K19; do
+    /bin/echo "$KM2OUT" | grep -q "^FAIL $CASE" || KM2MISSES="$KM2MISSES $CASE"
+  done
+  if [ "$KM2RC" = "0" ] || [ -n "$KM2MISSES" ]; then
+    bad "K_MUT2 回退误判没被抓红(rc=$KM2RC 漏报:$KM2MISSES)"
+  else
+    ok "K_MUT2 变异验证（把硬件不支持误判为失败会被 K16/K19 抓红）"
+  fi
+else
+  bad "K_MUT2 编译失败$(tail -3 "$WORK/km2.log")"
+fi
+
+# L 段：HID++ 0x2201 真实 DPI 能力（2026-11-06，用户指出鼠标上限 25600）
+# 背景：旧实现把档位硬编码 [400...3200]、currentDPI 写死 1000、把 feature ID 高字节
+# 0x22 当 feature index、发完报文不看返回值就显示「已应用硬件 DPI」。
+# 真机探针（pid=0xc547）回报：featureIndex=7，档位 [100, 25600]，步长 50，
+# 当前 5400、默认 1600；另一个接收器 pid=0xc548 返回 index=0（不支持）。
+# L 段验的是协议解析与写入判定纯函数；端到端链路由真机探针覆盖。
+/bin/mkdir -p "$WORK/ldir"
+/bin/cat > "$WORK/ldir/main.swift" <<'LSWIFT'
+import Foundation
+
+var failures = 0
+func require(_ cond: @autoclosure () -> Bool, _ label: String) {
+    if !cond() { print("FAIL \(label)"); failures += 1 }
+}
+
+// 真机 GET_SENSOR_DPI_LIST 响应的 parameters 区：
+// 00 | 0064 | e032 | 6400 | 0000...  → sensor0 / 100 / 步长 50 / 25600 / 结束
+let listParams: [UInt8] = [0x00, 0x00, 0x64, 0xe0, 0x32, 0x64,
+                           0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+let parsed = HIDPPDPIParser.parseList(listParams)
+require(parsed != nil, "L1 真机 DPI 列表必须能解析")
+guard let list = parsed else { print("FAIL L1 前置不成立，后续无法验证"); exit(1) }
+require(list.sensorIndex == 0, "L2 sensorIndex=0")
+require(list.values == [100, 25600], "L3 档位 [100, 25600]")
+require(list.step == 50, "L4 步长编码 0xE032 → 50")
+require(list.min == 100 && list.max == 25600, "L5 上限 25600（用户实机值）")
+require(list.max != 3200, "L6 不能再是旧硬编码上限 3200")
+
+// 真机 GET_SENSOR_DPI：00 | 1518 | 0640 → 当前 5400、默认 1600
+let curParams: [UInt8] = [0x00, 0x15, 0x18, 0x06, 0x40, 0x00, 0x00, 0x00]
+let cur = HIDPPDPIParser.parseCurrent(curParams)
+require(cur?.current == 5400, "L7 当前 DPI=5400")
+require(cur?.defaultValue == 1600, "L8 默认 DPI=1600")
+
+let sel = HIDPPDPIParser.selectableDPIs(list, current: 5400)
+require(sel.contains(25600), "L9 设备上限 25600 必须可选")
+require(sel.contains(5400), "L10 设备当前值必须可选")
+require(sel.allSatisfy { $0 >= list.min && $0 <= list.max }, "L11 档位不得超出设备回报范围")
+require(sel.allSatisfy { ($0 - list.min) % 50 == 0 }, "L12 档位必须对齐设备步长 50")
+require(sel == sel.sorted() && Set(sel).count == sel.count, "L13 档位有序且去重")
+
+// SET_SENSOR_DPI 报文：featureIndex 必须来自 getFeature，不能写死 0x22
+let req = HIDPPDPIParser.setRequest(featureIndex: 7, sensor: 0, dpi: 25600)
+require(req.count == 20, "L14 长报文 20 字节")
+require(req[0] == 0x11 && req[1] == 0x01, "L15 reportID / deviceIndex")
+require(req[2] == 7, "L16 featureIndex 用查询得到的 7")
+require(req[2] != 0x22, "L17 不能把 feature ID 高字节当 index（旧实现）")
+require(req[3] == 0x38, "L18 SET_SENSOR_DPI = fn3<<4|sw8 = 0x38")
+require(req[4] == 0, "L19 sensorIndex")
+require(req[5] == 0x64 && req[6] == 0x00, "L20 25600 = 0x6400 大端")
+let req800 = HIDPPDPIParser.setRequest(featureIndex: 7, sensor: 0, dpi: 800)
+require(req800[5] == 0x03 && req800[6] == 0x20, "L21 800 = 0x0320 大端")
+
+// 写入判定：任一环缺失都必须判红，不能只凭 SetReport 返回值报绿
+require(HIDPPDPIWrite.verdict(setReportOK: true, echo: 25600, readBack: 25600, target: 25600) == .verified,
+        "L22 全链路一致才算成功")
+let noSet = HIDPPDPIWrite.verdict(setReportOK: false, echo: nil, readBack: nil, target: 25600)
+require(!noSet.ok && noSet == .setReportFailed, "L23 报文未被接受不得报绿且要给出具体拒因")
+let noRead = HIDPPDPIWrite.verdict(setReportOK: true, echo: nil, readBack: nil, target: 25600)
+require(!noRead.ok && noRead == .noReadBack, "L24 没有读回不得报绿（旧实现假绿点）")
+require(HIDPPDPIWrite.verdict(setReportOK: true, echo: nil, readBack: 800, target: 25600) == .readBackMismatch(800),
+        "L25 读回与目标不符要判红")
+require(HIDPPDPIWrite.verdict(setReportOK: true, echo: 800, readBack: 25600, target: 25600) == .echoMismatch(800),
+        "L26 设备回显不符要判红（不能只看读回）")
+require(HIDPPDPIWrite.verdict(setReportOK: true, echo: 0, readBack: 25600, target: 25600) == .verified,
+        "L27 协议 v0 不回显时仍以读回为准")
+
+// 解析防御：读不到就返回 nil，绝不拿硬编码档位兜底
+require(HIDPPDPIParser.parseList([0x00]) == nil, "L28 报文过短返回 nil")
+require(HIDPPDPIParser.parseList([0x00, 0x00, 0x00]) == nil, "L29 无档位返回 nil")
+require(HIDPPDPIParser.parseCurrent([0x00, 0x15]) == nil, "L30 当前 DPI 报文过短返回 nil")
+
+if failures == 0 { print("L-OK") } else { exit(1) }
+LSWIFT
+
+if "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -o "$WORK/l" Sources/LogitechHIDPP.swift "$WORK/ldir/main.swift" 2>"$WORK/l.log"; then
+  LRC=0
+  LOUT="$("$WORK/l" 2>&1)" || LRC=$?
+  LFAILS="$(/bin/echo "$LOUT" | grep '^FAIL' || true)"
+  if [ "$LRC" != "0" ]; then LFAILS="$LFAILS L_EXIT(rc=$LRC 非零退出/崩溃)"; fi
+  if [ -z "$LFAILS" ]; then ok "L HID++ 0x2201 真实 DPI 能力与写入读回校验（30 项）"; else bad "L $LFAILS"; fi
+else
+  bad "L 编译失败$(tail -3 "$WORK/l.log")"
+fi
+
+# L_W 接线守卫：源码里不能残留旧假绿写法
+LWFAILS=""
+HSRC="$(/bin/cat Sources/LogitechHIDPP.swift)"
+VSRC="$(/bin/cat Sources/Views.swift)"
+/bin/echo "$VSRC" | /usr/bin/grep -q 'ForEach(\[400, 800, 1000, 1200, 1600, 2000, 2400, 3200\]' && LWFAILS="$LWFAILS LW1"
+/bin/echo "$HSRC" | /usr/bin/grep -q 'req\[2\] = 0x22' && LWFAILS="$LWFAILS LW2"
+/bin/echo "$HSRC" | /usr/bin/grep -q 'supportedDPIs: \[400, 800' && LWFAILS="$LWFAILS LW3"
+/bin/echo "$HSRC" | /usr/bin/grep -q 'currentDPI: 1000' && LWFAILS="$LWFAILS LW4"
+/bin/echo "$HSRC" | /usr/bin/grep -q 'HIDPPDPIWrite.verdict(' || LWFAILS="$LWFAILS LW5"
+/bin/echo "$HSRC" | /usr/bin/grep -q 'HIDPPDPICommand.getFeature' || LWFAILS="$LWFAILS LW6"
+/bin/echo "$HSRC" | /usr/bin/grep -q 'if result.verdict.ok' || LWFAILS="$LWFAILS LW7"
+/bin/echo "$VSRC" | /usr/bin/grep -q 'logi.selectableDPIs' || LWFAILS="$LWFAILS LW8"
+/bin/echo "$VSRC" | /usr/bin/grep -q 'case .ready(let cap' || LWFAILS="$LWFAILS LW9"
+/bin/echo "$VSRC" | /usr/bin/grep -q 'Button("刷新") { logi.refresh() }' || LWFAILS="$LWFAILS LW10"
+LSEC="$(/usr/bin/sed -n '/^struct LogitechSectionView/,/^}/p' Sources/Views.swift)"
+# 写入必须是显式按钮：早先 onChange(of: selectedDPI) 自动下发，打开页面就发 SET 报文。
+/bin/echo "$LSEC" | /usr/bin/grep -qF '.onChange(of: selectedDPI)' && LWFAILS="$LWFAILS LW11"
+/bin/echo "$LSEC" | /usr/bin/grep -q 'Button("应用") {' || LWFAILS="$LWFAILS LW12"
+/bin/echo "$LSEC" | /usr/bin/grep -q 'logi.setDPI(selectedDPI)' || LWFAILS="$LWFAILS LW13"
+if [ -z "$LWFAILS" ]; then ok "L_W 接线守卫（无硬编码档位 / 真实探测 / 失败不报绿 / 写入必须显式）"; else bad "L_W $LWFAILS"; fi
+
+# 两趟变异验证：把「假绿」注入回源码，L 段必须抓红。
+/bin/mkdir -p "$WORK/lmut"
+/usr/bin/sed 's|guard setReportOK else { return .setReportFailed }|guard setReportOK else { return .verified } // MUTANT|' \
+    Sources/LogitechHIDPP.swift > "$WORK/lmut/LogitechHIDPP.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/lmut/LogitechHIDPP.swift"; then
+  bad "L_MUT 变异注入失败（前置没造出来，不能算验证过）"
+elif "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -o "$WORK/lm" "$WORK/lmut/LogitechHIDPP.swift" "$WORK/ldir/main.swift" 2>"$WORK/lm.log"; then
+  LMRC=0
+  LMOUT="$("$WORK/lm" 2>&1)" || LMRC=$?
+  if [ "$LMRC" = "0" ] || ! /bin/echo "$LMOUT" | grep -q '^FAIL L23'; then
+    bad "L_MUT 报文失败却报绿没被抓红(rc=$LMRC)"
+  else
+    ok "L_MUT 变异验证（报文失败仍报绿会被 L23 抓红）"
+  fi
+else
+  bad "L_MUT 编译失败$(tail -3 "$WORK/lm.log")"
+fi
+
+/usr/bin/sed 's|req\[2\] = featureIndex|req[2] = 0x22 // MUTANT|' \
+    Sources/LogitechHIDPP.swift > "$WORK/lmut/LogitechHIDPP.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/lmut/LogitechHIDPP.swift"; then
+  bad "L_MUT2 变异注入失败（前置没造出来，不能算验证过）"
+elif "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -o "$WORK/lm2" "$WORK/lmut/LogitechHIDPP.swift" "$WORK/ldir/main.swift" 2>"$WORK/lm2.log"; then
+  LM2RC=0
+  LM2OUT="$("$WORK/lm2" 2>&1)" || LM2RC=$?
+  LM2MISSES=""
+  for CASE in L16 L17; do
+    /bin/echo "$LM2OUT" | grep -q "^FAIL $CASE" || LM2MISSES="$LM2MISSES $CASE"
+  done
+  if [ "$LM2RC" = "0" ] || [ -n "$LM2MISSES" ]; then
+    bad "L_MUT2 旧 featureIndex 写法没被抓红(rc=$LM2RC 漏报:$LM2MISSES)"
+  else
+    ok "L_MUT2 变异验证（把 featureIndex 写死 0x22 会被 L16/L17 抓红）"
+  fi
+else
+  bad "L_MUT2 编译失败$(tail -3 "$WORK/lm2.log")"
+fi
+
+# ---------------------------------------------------------------------------
+# M 段：内建触控板不参与加速度写入，且「跳过」必须可见（2026-11-06 第四轮）
+# 真机：用户勾选了旧开关后，内建触控板写 HIDMouseAcceleration=-1 读回 0，
+# 于是整段「状态」区变成红色「写入未生效」，但那台设备其实从未被接管过。
+# 旧开关是个没有载体的假选项：设备不支持，勾了只会制造假失败。
+# M 段验设备范围 + 状态合成两个纯决策；端到端由真机截图验收。
+# ---------------------------------------------------------------------------
+/bin/mkdir -p "$WORK/mdir"
+/bin/cat > "$WORK/mdir/main.swift" <<'MSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: @autoclosure () -> Bool, _ label: String) {
+    if !c() { print("FAIL \(label)"); failures += 1 }
+}
+
+// 真机拓扑：罗技 USB Receiver 两个 HID 接口 + 内建触控板
+let topo: [(rid: UInt64, builtIn: Bool)] = [
+    (rid: 4294972324, builtIn: false),
+    (rid: 4294972593, builtIn: false),
+    (rid: 4294973001, builtIn: true),
+]
+
+require(PointerAccelPolicy.scope(builtIn: true) == .systemManagedBuiltIn,
+        "M1 内建触控板必须归类为「系统管理」，不是「可写但失败」")
+require(PointerAccelPolicy.scope(builtIn: false) == .externalMouse,
+        "M2 外接鼠标归类为可接管")
+let ids = PointerAccelPolicy.eligible(topo)
+require(ids == [4294972324, 4294972593], "M3 eligible 只含两台外接设备")
+require(!ids.contains(4294973001), "M4 触控板 rid 不得进入写入列表")
+require(PointerAccelPolicy.eligible([(rid: 7, builtIn: true)]) == [],
+        "M5 只有触控板时写入列表必须为空")
+require(PointerAccelPolicy.eligible([]) == [], "M6 无设备时写入列表为空")
+require(PointerAccelPolicy.eligible([(rid: 1, builtIn: false), (rid: 2, builtIn: true),
+                                     (rid: 3, builtIn: false)]) == [1, 3],
+        "M7 混合设备保持外接设备的原始顺序")
+
+// 成功判定：跳过项绝不参与，且空结果不能报绿
+require(PointerAccelStatus.allOK([true, true]), "M8 外接设备全部写入成功 = 绿")
+require(!PointerAccelStatus.allOK([true, false]), "M9 任一外接设备失败必须判红")
+require(!PointerAccelStatus.allOK([]), "M10 一台可写设备都没有不能报绿（旧假绿点）")
+let onlyPad = PointerAccelPolicy.eligible([(rid: 9, builtIn: true)])
+require(onlyPad.isEmpty && !PointerAccelStatus.allOK(Array(repeating: true, count: onlyPad.count)),
+        "M11 只有触控板时整体状态仍为未接管，不能因「跳过」变绿")
+
+// 跳过必须可见：带设备名、带具体原因、且不能复用「写入失败」措辞
+let line = PointerAccelStatus.skippedLine(name: "Apple Internal Trackpad")
+require(line.contains("Apple Internal Trackpad"), "M12 跳过说明必须带设备名（不能静默跳过）")
+require(line.contains("内建触控板由系统管理"), "M13 跳过说明必须写清原因")
+require(!line.isEmpty, "M14 跳过说明不得为空字符串")
+require(!line.contains("⚠️"), "M15 跳过不是写入失败，不得带警告符号")
+require(!line.contains("写入未生效"), "M16 跳过不得复用写入失败措辞（旧版整段红字的来源）")
+
+if failures == 0 { print("M-OK") } else { exit(1) }
+MSWIFT
+
+# 全套源码编译（与 I/K 段一致）：M 段只调用纯策略，但必须编译真文件而不是复制品。
+MCOMPILE() {
+  "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -I "$1" -I Sources -o "$2" \
+    Sources/Model.swift Sources/Actions.swift Sources/ScrollAxis.swift "$1/PointerController.swift" \
+    Sources/ScrollPhases.swift \
+    Sources/ScrollEngine.swift Sources/UpdateModel.swift Sources/Updater.swift Sources/Views.swift Sources/SettingsLauncher.swift \
+    Sources/App.swift Sources/CursorZoom.swift Sources/LogitechHIDPP.swift Sources/GamePerf.swift \
+    Sources/TouchEvents.c "$WORK/mdir/main.swift"
+}
+/bin/mkdir -p "$WORK/mmut"
+/bin/cp Sources/PointerController.swift "$WORK/mmut/PointerController.swift"
+if MCOMPILE "$WORK/mmut" "$WORK/m" 2>"$WORK/m.log"; then
+  MRC=0
+  MOUT="$("$WORK/m" 2>&1)" || MRC=$?
+  MFAILS="$(/bin/echo "$MOUT" | grep '^FAIL' || true)"
+  if [ "$MRC" != "0" ]; then MFAILS="$MFAILS M_EXIT(rc=$MRC 非零退出/崩溃)"; fi
+  /bin/echo "$MOUT" | grep -q 'M-OK' || MFAILS="$MFAILS M_NOMARK(缺 M-OK 完成标记)"
+  if [ -z "$MFAILS" ]; then ok "M 内建触控板隔离：设备范围 / 状态合成 / 跳过可见（16 项）"; else bad "M $MFAILS"; fi
+else
+  bad "M 编译失败$(tail -3 "$WORK/m.log")"
+fi
+
+# M_W 接线守卫：纯函数全绿不代表 apply / UI 真的接上了。
+# 源码先剥行注释，避免守卫抓到文档里的旧写法字面量（LW11 踩过这个坑）。
+MWFAILS=""
+MPNC="$(/usr/bin/sed -E 's://.*$::' Sources/PointerController.swift)"
+MVIEWS="$(/usr/bin/sed -E 's://.*$::' Sources/Views.swift)"
+/bin/echo "$MPNC" | /usr/bin/grep -qF 'prefs.pointerIncludeBuiltIn || !$0.builtIn' && MWFAILS="$MWFAILS MW1"
+/bin/echo "$MPNC" | /usr/bin/grep -qF 'PointerAccelPolicy.scope(builtIn: $0.builtIn) == .externalMouse' || MWFAILS="$MWFAILS MW2"
+/bin/echo "$MPNC" | /usr/bin/grep -qF 'let readings = eligible.map' || MWFAILS="$MWFAILS MW3"
+/bin/echo "$MPNC" | /usr/bin/grep -qF 'PointerAccelStatus.skippedLine(name: device.name)' || MWFAILS="$MWFAILS MW4"
+/bin/echo "$MPNC" | /usr/bin/grep -qF 'let allOK = PointerAccelStatus.allOK(writeResults)' || MWFAILS="$MWFAILS MW5"
+/bin/echo "$MPNC" | /usr/bin/grep -qF 'writeResults.append(good)' || MWFAILS="$MWFAILS MW6"
+/bin/echo "$MVIEWS" | /usr/bin/grep -qF 'Toggle("同时应用到内置触控板"' && MWFAILS="$MWFAILS MW7"
+/bin/echo "$MVIEWS" | /usr/bin/grep -qF 'isOn: $prefs.pointerIncludeBuiltIn' && MWFAILS="$MWFAILS MW8"
+/bin/echo "$MVIEWS" | /usr/bin/grep -qF '内建触控板由系统管理' || MWFAILS="$MWFAILS MW9"
+if [ -z "$MWFAILS" ]; then ok "M_W 接线守卫（apply 按策略筛选 / 跳过行可见 / UI 无假开关）"; else bad "M_W $MWFAILS"; fi
+
+# 三趟变异：每次都先确认 MUTANT 真的注入成功，再要求具体断言报红。
+# ① 把触控板重新纳入写入（旧开关行为）→ M1/M3/M4/M5/M7 必须红。
+/usr/bin/sed 's|builtIn ? \.systemManagedBuiltIn : \.externalMouse|builtIn ? .externalMouse : .externalMouse // MUTANT|' \
+    Sources/PointerController.swift > "$WORK/mmut/PointerController.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/mmut/PointerController.swift"; then
+  bad "M_MUT 变异注入失败（前置没造出来，不能算验证过）"
+elif MCOMPILE "$WORK/mmut" "$WORK/mm1" 2>"$WORK/mm1.log"; then
+  MM1RC=0
+  MM1OUT="$("$WORK/mm1" 2>&1)" || MM1RC=$?
+  MM1MISSES=""
+  for CASE in M1 M3 M4 M5 M7; do
+    /bin/echo "$MM1OUT" | grep -q "^FAIL $CASE" || MM1MISSES="$MM1MISSES $CASE"
+  done
+  if [ "$MM1RC" = "0" ] || [ -n "$MM1MISSES" ]; then
+    bad "M_MUT 触控板重新纳入写入没被抓红(rc=$MM1RC 漏报:$MM1MISSES)"
+  else
+    ok "M_MUT 变异验证（旧开关行为被 M1/M3/M4/M5/M7 抓红）"
+  fi
+else
+  bad "M_MUT 编译失败$(tail -3 "$WORK/mm1.log")"
+fi
+
+# ② 把成功判定改成恒真（旧假绿）→ M9/M10/M11 必须红。
+/usr/bin/sed 's|!writeResults.isEmpty && writeResults.allSatisfy { $0 }|true // MUTANT|' \
+    Sources/PointerController.swift > "$WORK/mmut/PointerController.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/mmut/PointerController.swift"; then
+  bad "M_MUT2 变异注入失败（前置没造出来，不能算验证过）"
+elif MCOMPILE "$WORK/mmut" "$WORK/mm2" 2>"$WORK/mm2.log"; then
+  MM2RC=0
+  MM2OUT="$("$WORK/mm2" 2>&1)" || MM2RC=$?
+  MM2MISSES=""
+  for CASE in M9 M10 M11; do
+    /bin/echo "$MM2OUT" | grep -q "^FAIL $CASE" || MM2MISSES="$MM2MISSES $CASE"
+  done
+  if [ "$MM2RC" = "0" ] || [ -n "$MM2MISSES" ]; then
+    bad "M_MUT2 恒真成功判定没被抓红(rc=$MM2RC 漏报:$MM2MISSES)"
+  else
+    ok "M_MUT2 变异验证（恒绿实现被 M9/M10/M11 抓红）"
+  fi
+else
+  bad "M_MUT2 编译失败$(tail -3 "$WORK/mm2.log")"
+fi
+
+# ③ 抹掉跳过原因（静默跳过）→ M13 必须红。
+/usr/bin/sed 's|：内建触控板由系统管理（不写入加速度）"|" // MUTANT|' \
+    Sources/PointerController.swift > "$WORK/mmut/PointerController.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/mmut/PointerController.swift"; then
+  bad "M_MUT3 变异注入失败（前置没造出来，不能算验证过）"
+elif MCOMPILE "$WORK/mmut" "$WORK/mm3" 2>"$WORK/mm3.log"; then
+  MM3RC=0
+  MM3OUT="$("$WORK/mm3" 2>&1)" || MM3RC=$?
+  if [ "$MM3RC" = "0" ] || ! /bin/echo "$MM3OUT" | grep -q '^FAIL M13'; then
+    bad "M_MUT3 静默跳过没被抓红(rc=$MM3RC)"
+  else
+    ok "M_MUT3 变异验证（跳过原因被抹掉会被 M13 抓红）"
+  fi
+else
+  bad "M_MUT3 编译失败$(tail -3 "$WORK/mm3.log")"
+fi
+
+# ---------------------------------------------------------------------------
+# N 段：鼠标硬件 DPI 快捷键切换后的自动同步（2026-11-06 第五轮）
+# 真机探针结论：Solaar notifications.py 里 0x2201 没有 DPI 变更通知 → 必须主动 GET。
+# 纠正一次误判：最初以为「None 打开收不到响应」，独立进程 15/15 全部读到 5400，
+# 证明那只是接收器休眠预热；所以同步连接用 None 非独占打开，不霸占 HID++ 接口。
+# N 段验「变化判定 / 失败不吞 / 写入竞态 / 文案不撒谎」四个纯决策；
+# 端到端由真机按 DPI 键 + 截图验收。
+# ---------------------------------------------------------------------------
+/bin/mkdir -p "$WORK/ndir"
+/bin/cat > "$WORK/ndir/main.swift" <<'NSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: @autoclosure () -> Bool, _ label: String) {
+    if !c() { print("FAIL \(label)"); failures += 1 }
+}
+
+// 真机能力：100–25600，步长 50；当前 5400
+let p: [UInt8] = [0x00, 0x00, 0x64, 0xe0, 0x32, 0x64,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+guard let cap = HIDPPDPIParser.parseList(p) else {
+    print("FAIL N0 前置不成立：真机 DPI 列表解析失败"); exit(1)
+}
+
+// 硬件按 DPI 键切到 3200 的 GET_SENSOR_DPI 响应
+let d3200: [UInt8] = [0x00, 0x0c, 0x80, 0x06, 0x40, 0x00, 0x00, 0x00]
+require(HIDPPDPIParser.parseCurrent(d3200)?.current == 3200, "N1 新档位 3200 必须能从设备报文解析")
+
+require(HIDPPDPISync.outcome(baseline: 5400, observed: 3200, capability: cap, writing: false)
+        == .hardwareChanged(3200), "N2 硬件切换必须识别为 hardwareChanged")
+require(HIDPPDPISync.outcome(baseline: 5400, observed: 5400, capability: cap, writing: false)
+        == .noChange, "N3 值没变不产生同步事件")
+require(HIDPPDPISync.outcome(baseline: 0, observed: 5400, capability: cap, writing: false)
+        == .hardwareChanged(5400), "N4 首次读到值也要同步（基线 0 不能吞掉）")
+
+// 读失败绝不能被当成「没变」：否则硬件切换会被静默吞掉
+require(HIDPPDPISync.outcome(baseline: 5400, observed: nil, capability: cap, writing: false)
+        == .readFailed, "N5 读失败必须单独成 case，不能报 noChange")
+require(HIDPPDPISync.outcome(baseline: 5400, observed: 0, capability: cap, writing: false)
+        == .readFailed, "N6 设备回 0 不是有效 DPI，不得当成 noChange")
+require(HIDPPDPISync.outcome(baseline: 5400, observed: -1, capability: cap, writing: false)
+        == .readFailed, "N7 负数读数不得当成 noChange")
+require(HIDPPDPISync.outcome(baseline: 5400, observed: 30000, capability: cap, writing: false)
+        == .outOfRange(30000), "N8 超出设备能力上限要判越界而非同步")
+require(HIDPPDPISync.outcome(baseline: 5400, observed: 50, capability: cap, writing: false)
+        == .outOfRange(50), "N9 低于设备能力下限要判越界")
+
+// App 自己写入期间，读到的中间值不得被当成「硬件切换」
+require(HIDPPDPISync.outcome(baseline: 5400, observed: 3200, capability: cap, writing: true)
+        == .ignoredWhileWriting, "N10 写入竞态必须忽略观测值")
+require(HIDPPDPISync.outcome(baseline: 5400, observed: nil, capability: cap, writing: true)
+        == .ignoredWhileWriting, "N11 写入期间读失败也不能刷成失败状态")
+
+let hs = HIDPPDPISync.hardwareStatus(3200)
+require(hs.contains("3200"), "N12 状态文案要带新档位数值")
+require(hs.contains("未回写硬件"), "N13 状态文案必须明确没有回写硬件")
+require(!hs.contains("已应用"), "N14 自动同步不得复用「已应用硬件 DPI」措辞（会误以为 Smoose 写了设备）")
+let fs = HIDPPDPISync.failureStatus(failures: 3, kept: 5400)
+require(fs.contains("3") && fs.contains("5400"), "N15 读失败必须显示连续次数并保留上次值")
+require(HIDPPDPISync.outOfRangeStatus(30000, min: cap.min, max: cap.max).contains("30000"),
+        "N16 越界文案要带被忽略的读数")
+require(HIDPPDPISync.badge(watching: true).contains("自动同步中"), "N17 同步中要有可见标识")
+require(HIDPPDPISync.badge(watching: false).contains("暂停"), "N18 暂停不能伪装成同步中")
+
+require(HIDPPDPISync.pollInterval > 0 && HIDPPDPISync.pollInterval <= 0.5,
+        "N19 轮询间隔要跟手且不能忙等")
+require(HIDPPDPISync.backoffThreshold >= 2 && HIDPPDPISync.backoffInterval > HIDPPDPISync.pollInterval,
+        "N20 连续失败要退避，退避间隔必须大于正常轮询")
+require(HIDPPDPISync.warmupRequests >= 2,
+        "N23 接收器休眠必须预热，不能把首个超时当成读取失败")
+
+// 硬件可能切到不在常用档位里的值：Picker 必须仍然有这个选项
+let sel = HIDPPDPIParser.selectableDPIs(cap, current: 3300)
+require(sel.contains(3300), "N21 硬件切到非常规档位 3300 时下拉框仍须可选")
+require(sel.allSatisfy { $0 >= cap.min && $0 <= cap.max }, "N22 同步后的档位仍受设备能力约束")
+
+if failures == 0 { print("N-OK") } else { exit(1) }
+NSWIFT
+
+NCOMPILE() {
+  "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -o "$2" "$1/LogitechHIDPP.swift" "$WORK/ndir/main.swift"
+}
+/bin/mkdir -p "$WORK/nmut"
+/bin/cp Sources/LogitechHIDPP.swift "$WORK/nmut/LogitechHIDPP.swift"
+if NCOMPILE "$WORK/nmut" "$WORK/n" 2>"$WORK/n.log"; then
+  NRC=0
+  NOUT="$("$WORK/n" 2>&1)" || NRC=$?
+  NFAILS="$(/bin/echo "$NOUT" | grep '^FAIL' || true)"
+  if [ "$NRC" != "0" ]; then NFAILS="$NFAILS N_EXIT(rc=$NRC 非零退出/崩溃)"; fi
+  /bin/echo "$NOUT" | grep -q 'N-OK' || NFAILS="$NFAILS N_NOMARK(缺 N-OK 完成标记)"
+  if [ -z "$NFAILS" ]; then ok "N 硬件 DPI 自动同步：变化判定 / 失败不吞 / 写入竞态 / 文案（23 项）"; else bad "N $NFAILS"; fi
+else
+  bad "N 编译失败$(tail -3 "$WORK/n.log")"
+fi
+
+# N_W 接线守卫：纯函数全绿不代表真机链路接上了、也不代表没有偷偷回写硬件。
+NWFAILS=""
+NHSRC="$(/usr/bin/sed -E 's://.*$::' Sources/LogitechHIDPP.swift)"
+NVSRC="$(/usr/bin/sed -E 's://.*$::' Sources/Views.swift)"
+NAPP="$(/usr/bin/sed -E 's://.*$::' Sources/App.swift)"
+NWATCH="$(/usr/bin/sed -n '/^private final class HIDPPWatchSession/,/^\/\/ MARK: - 探测结果/p' Sources/LogitechHIDPP.swift)"
+NHANDLE="$(/usr/bin/sed -n '/^    private func handleSyncReading/,/^    private func adoptCurrentDPI/p' Sources/LogitechHIDPP.swift)"
+
+# 前置必须单独成条：范围是空的 / 抓错函数时，「没找到写入」这种断言会假绿。
+/bin/echo "$NWATCH" | /usr/bin/grep -q '^private final class HIDPPWatchSession' || NWFAILS="$NWFAILS NW_PRE1"
+/bin/echo "$NWATCH" | /usr/bin/grep -qF 'private func run()' || NWFAILS="$NWFAILS NW_PRE2"
+/bin/echo "$NHANDLE" | /usr/bin/grep -q '^    private func handleSyncReading' || NWFAILS="$NWFAILS NW_PRE3"
+/bin/echo "$NHANDLE" | /usr/bin/grep -qF 'case .hardwareChanged' || NWFAILS="$NWFAILS NW_PRE4"
+
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'HIDPPDPISync.outcome(baseline: currentDPI' || NWFAILS="$NWFAILS NW1"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'HIDPPDPISync.hardwareStatus(dpi)' || NWFAILS="$NWFAILS NW2"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'HIDPPDPISync.failureStatus(' || NWFAILS="$NWFAILS NW3"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'HIDPPDPISync.badge(watching: true)' || NWFAILS="$NWFAILS NW4"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'let want = windowVisible && dpiPageVisible && !isWriting && probeInfo != nil' || NWFAILS="$NWFAILS NW5"
+# 「App 失活就暂停」是错的：硬件 DPI 键恰恰在 Smoose 不是前台时按。
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'appActive' && NWFAILS="$NWFAILS NW5B"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'adoptCurrentDPI(dpi, info: info)' || NWFAILS="$NWFAILS NW6"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF '.ready(info.capability, current: dpi' || NWFAILS="$NWFAILS NW7"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'isWriting = true' || NWFAILS="$NWFAILS NW8"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'session.requestOnce(info.featureIndex, HIDPPDPICommand.getSensorDPI' || NWFAILS="$NWFAILS NW9"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF 'IOHIDDeviceOpen(dev, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))' || NWFAILS="$NWFAILS NW10"
+# 同步连接必须非独占：既要有 None 打开，也不能出现 SeizeDevice。
+/bin/echo "$NWATCH" | /usr/bin/grep -qF 'IOHIDDeviceOpen(dev, IOOptionBits(kIOHIDOptionsTypeNone))' || NWFAILS="$NWFAILS NW10A"
+/bin/echo "$NWATCH" | /usr/bin/grep -qF 'SeizeDevice' && NWFAILS="$NWFAILS NW10B"
+/bin/echo "$NHSRC" | /usr/bin/grep -qF '0..<HIDPPDPISync.warmupRequests' || NWFAILS="$NWFAILS NW10C"
+# 同步链路只读：watch 会话和状态处理里都不允许出现写入报文 / setDPI
+/bin/echo "$NWATCH" | /usr/bin/grep -qE 'setSensorDPI|0x38|HIDPPWrite' && NWFAILS="$NWFAILS NW11"
+/bin/echo "$NHANDLE" | /usr/bin/grep -qF 'setDPI(' && NWFAILS="$NWFAILS NW12"
+# UI 接线
+/bin/echo "$NVSRC" | /usr/bin/grep -qF 'logi.setDPIPageVisible(true)' || NWFAILS="$NWFAILS NW13"
+/bin/echo "$NVSRC" | /usr/bin/grep -qF 'logi.setDPIPageVisible(false)' || NWFAILS="$NWFAILS NW14"
+/bin/echo "$NVSRC" | /usr/bin/grep -qF '当前硬件 DPI：' || NWFAILS="$NWFAILS NW15"
+/bin/echo "$NVSRC" | /usr/bin/grep -qF 'logi.syncStatus' || NWFAILS="$NWFAILS NW16"
+/bin/echo "$NVSRC" | /usr/bin/grep -qF 'case .ready(let cap, let current, let def)' || NWFAILS="$NWFAILS NW17"
+# App 生命周期：窗口隐藏要停连接（App 失活绝不停），唤醒要重新探测
+/bin/echo "$NAPP" | /usr/bin/grep -qF 'setSettingsVisible(true)' || NWFAILS="$NWFAILS NW18"
+/bin/echo "$NAPP" | /usr/bin/grep -qF 'setSettingsVisible(false)' || NWFAILS="$NWFAILS NW19"
+/bin/echo "$NAPP" | /usr/bin/grep -qF 'setAppActive' && NWFAILS="$NWFAILS NW20"
+/bin/echo "$NAPP" | /usr/bin/grep -qF 'LogitechHIDPP.shared.refresh()' || NWFAILS="$NWFAILS NW21"
+if [ -z "$NWFAILS" ]; then ok "N_W 接线守卫（同步链路只读 / 可见性门禁 / 状态与 UI 接线）"; else bad "N_W $NWFAILS"; fi
+
+# 三趟变异：每次先确认 MUTANT 真的注入，再要求具体断言变红。
+/usr/bin/sed 's|return v == baseline ? .noChange : .hardwareChanged(v)|return .noChange // MUTANT|' \
+    Sources/LogitechHIDPP.swift > "$WORK/nmut/LogitechHIDPP.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/nmut/LogitechHIDPP.swift"; then
+  bad "N_MUT 变异注入失败（前置没造出来，不能算验证过）"
+elif NCOMPILE "$WORK/nmut" "$WORK/nm1" 2>"$WORK/nm1.log"; then
+  NM1RC=0
+  NM1OUT="$("$WORK/nm1" 2>&1)" || NM1RC=$?
+  NM1MISSES=""
+  for CASE in N2 N4; do
+    /bin/echo "$NM1OUT" | grep -q "^FAIL $CASE" || NM1MISSES="$NM1MISSES $CASE"
+  done
+  if [ "$NM1RC" = "0" ] || [ -n "$NM1MISSES" ]; then
+    bad "N_MUT 吞掉硬件切换没被抓红(rc=$NM1RC 漏报:$NM1MISSES)"
+  else
+    ok "N_MUT 变异验证（恒 noChange 会被 N2/N4 抓红）"
+  fi
+else
+  bad "N_MUT 编译失败$(tail -3 "$WORK/nm1.log")"
+fi
+
+/usr/bin/sed 's|guard let v = observed, v > 0 else { return .readFailed }|guard let v = observed, v > 0 else { return .noChange } // MUTANT|' \
+    Sources/LogitechHIDPP.swift > "$WORK/nmut/LogitechHIDPP.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/nmut/LogitechHIDPP.swift"; then
+  bad "N_MUT2 变异注入失败（前置没造出来，不能算验证过）"
+elif NCOMPILE "$WORK/nmut" "$WORK/nm2" 2>"$WORK/nm2.log"; then
+  NM2RC=0
+  NM2OUT="$("$WORK/nm2" 2>&1)" || NM2RC=$?
+  NM2MISSES=""
+  for CASE in N5 N6 N7; do
+    /bin/echo "$NM2OUT" | grep -q "^FAIL $CASE" || NM2MISSES="$NM2MISSES $CASE"
+  done
+  if [ "$NM2RC" = "0" ] || [ -n "$NM2MISSES" ]; then
+    bad "N_MUT2 读失败被吞没被抓红(rc=$NM2RC 漏报:$NM2MISSES)"
+  else
+    ok "N_MUT2 变异验证（读失败伪装成 noChange 会被 N5/N6/N7 抓红）"
+  fi
+else
+  bad "N_MUT2 编译失败$(tail -3 "$WORK/nm2.log")"
+fi
+
+/usr/bin/sed 's|guard !writing else { return .ignoredWhileWriting }|_ = writing // MUTANT|' \
+    Sources/LogitechHIDPP.swift > "$WORK/nmut/LogitechHIDPP.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/nmut/LogitechHIDPP.swift"; then
+  bad "N_MUT3 变异注入失败（前置没造出来，不能算验证过）"
+elif NCOMPILE "$WORK/nmut" "$WORK/nm3" 2>"$WORK/nm3.log"; then
+  NM3RC=0
+  NM3OUT="$("$WORK/nm3" 2>&1)" || NM3RC=$?
+  NM3MISSES=""
+  for CASE in N10 N11; do
+    /bin/echo "$NM3OUT" | grep -q "^FAIL $CASE" || NM3MISSES="$NM3MISSES $CASE"
+  done
+  if [ "$NM3RC" = "0" ] || [ -n "$NM3MISSES" ]; then
+    bad "N_MUT3 写入竞态门禁被抹掉没被抓红(rc=$NM3RC 漏报:$NM3MISSES)"
+  else
+    ok "N_MUT3 变异验证（去掉 writing 门禁会被 N10/N11 抓红）"
+  fi
+else
+  bad "N_MUT3 编译失败$(tail -3 "$WORK/nm3.log")"
+fi
+
+# ---------------------------------------------------------------------------
+# O 段：系统设置「去授权」跳转（2026-11-07）
+# 真机：旧 URL 落到 Device Control and Data Access；System Settings 进程 hung 时
+# LSOpenURLs 报 -1712 并弹英文 not responding。验「URL 契约 / 失败不吞 / 反馈三要素」。
+# ---------------------------------------------------------------------------
+/bin/mkdir -p "$WORK/odir"
+/bin/cat > "$WORK/odir/main.swift" <<'OSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: @autoclosure () -> Bool, _ label: String) {
+    if !c() { print("FAIL \(label)"); failures += 1 }
+}
+
+let u = AccessibilitySettingsLauncher.urlString
+require(u.contains("com.apple.settings.PrivacySecurity.extension"), "O1 必须用新 PrivacySecurity 扩展 ID")
+require(!u.contains("com.apple.preference.security"), "O2 不得残留旧 preference.security ID")
+require(!u.contains("Privacy_Accessibility"), "O3 不得残留会落到 Device Control 页的旧 anchor")
+require(URL(string: u)?.scheme == "x-apple.systempreferences", "O4 URL 可解析且 scheme 正确")
+
+require(AccessibilitySettingsLauncher.outcome(errorDescription: nil) == .opened, "O5 无 error 才算成功")
+let e = "The application System Settings is not responding (-1712)"
+require(AccessibilitySettingsLauncher.outcome(errorDescription: e) == .failed(e), "O6 失败必须保留具体原因")
+require(AccessibilitySettingsLauncher.outcome(errorDescription: "   ") == .failed("系统设置未返回具体错误"), "O7 空白原因不能伪装成成功")
+require(AccessibilitySettingsLauncher.outcome(errorDescription: " -1712 ") == .failed("-1712"), "O8 原因要去首尾空白")
+require(AccessibilitySettingsLauncher.outcome(errorDescription: "") == .failed("系统设置未返回具体错误"), "O14 空字符串原因也要判失败")
+
+let m = AccessibilitySettingsLauncher.failureMessage(reason: e)
+require(m.contains(e), "O9 失败文案必须带具体原因")
+require(m.contains("重试"), "O10 失败文案必须给出可操作的重试")
+require(m.contains(AccessibilitySettingsLauncher.manualPath), "O11 失败文案必须给手动路径")
+require(m.contains("辅助功能") && m.contains("隐私与安全性"), "O12 手动路径要指明两层位置")
+require(!m.contains("已授权") && !m.contains("打开成功"), "O13 失败文案不得伪装成成功")
+
+if failures == 0 { print("O-OK") } else { exit(1) }
+OSWIFT
+
+OCOMPILE() {
+  "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -o "$2" "$1/SettingsLauncher.swift" "$WORK/odir/main.swift"
+}
+/bin/mkdir -p "$WORK/omut"
+/bin/cp Sources/SettingsLauncher.swift "$WORK/omut/SettingsLauncher.swift"
+if OCOMPILE "$WORK/omut" "$WORK/o" 2>"$WORK/o.log"; then
+  ORC=0
+  OOUT="$("$WORK/o" 2>&1)" || ORC=$?
+  OFAILS="$(/bin/echo "$OOUT" | grep '^FAIL' || true)"
+  if [ "$ORC" != "0" ]; then OFAILS="$OFAILS O_EXIT(rc=$ORC 非零退出/崩溃)"; fi
+  /bin/echo "$OOUT" | grep -q 'O-OK' || OFAILS="$OFAILS O_NOMARK(缺 O-OK 完成标记)"
+  if [ -z "$OFAILS" ]; then ok "O 系统设置跳转：URL 契约 / 失败判定 / 反馈三要素（14 项）"; else bad "O $OFAILS"; fi
+else
+  bad "O 编译失败$(tail -3 "$WORK/o.log")"
+fi
+
+# O_W 接线守卫：纯逻辑全绿不代表引导页真的换了实现，也不代表新文件进了编译列表。
+OWFAILS=""
+OLSRC="$(/usr/bin/sed -E 's://.*$::' Sources/SettingsLauncher.swift)"
+OVSRC="$(/usr/bin/sed -n '/^struct OnboardingView/,/^\/\/ MARK: - 组件/p' Sources/Views.swift | /usr/bin/sed -E 's://.*$::')"
+OBUILD="$(/usr/bin/sed -E 's:^#.*$::' build.sh)"
+OAPP="$(/usr/bin/sed -E 's://.*$::' Sources/App.swift)"
+
+# 前置单独成条：范围抓空时，「没有旧 URL / 没有裸 open」这类断言会假绿。
+/bin/echo "$OLSRC" | /usr/bin/grep -q '^enum AccessibilitySettingsLauncher' || OWFAILS="$OWFAILS OW_PRE1"
+/bin/echo "$OVSRC" | /usr/bin/grep -q '^struct OnboardingView' || OWFAILS="$OWFAILS OW_PRE2"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'private func step(' || OWFAILS="$OWFAILS OW_PRE3"
+/bin/echo "$OBUILD" | /usr/bin/grep -qF 'SettingsLauncher.swift' || OWFAILS="$OWFAILS OW1"
+/bin/echo "$OLSRC" | /usr/bin/grep -qF 'com.apple.settings.PrivacySecurity.extension' || OWFAILS="$OWFAILS OW2"
+/bin/echo "$OLSRC" | /usr/bin/grep -qF 'NSWorkspace.shared.open(url, configuration: configuration)' || OWFAILS="$OWFAILS OW3"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'AccessibilitySettingsLauncher.open()' || OWFAILS="$OWFAILS OW4"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'case .failed(let reason)' || OWFAILS="$OWFAILS OW5"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'AccessibilitySettingsLauncher.failureMessage(reason: reason)' || OWFAILS="$OWFAILS OW6"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'Button("重试")' || OWFAILS="$OWFAILS OW7"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'if let launchFailure' || OWFAILS="$OWFAILS OW8"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'AccessibilitySettingsLauncher.manualPath' || OWFAILS="$OWFAILS OW9"
+/bin/echo "$OAPP" | /usr/bin/grep -qF 'showOnboarding(force: true)' || OWFAILS="$OWFAILS OW12"
+# 旧实现必须彻底消失：裸 open + 旧 URL 任何一个残留都算没修干净。
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'NSWorkspace.shared.open(url)' && OWFAILS="$OWFAILS OW10"
+/bin/echo "$OVSRC" | /usr/bin/grep -qF 'com.apple.preference.security' && OWFAILS="$OWFAILS OW11"
+if [ -z "$OWFAILS" ]; then ok "O_W 接线守卫（引导页换实现 / 失败可见 / 编译列表接线）"; else bad "O_W $OWFAILS"; fi
+
+# 三趟变异：先确认 MUTANT 真的注入，再要求具体断言变红。
+/usr/bin/sed 's|return trimmed.isEmpty ? .failed("系统设置未返回具体错误") : .failed(trimmed)|return .opened // MUTANT|' \
+    Sources/SettingsLauncher.swift > "$WORK/omut/SettingsLauncher.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/omut/SettingsLauncher.swift"; then
+  bad "O_MUT 变异注入失败（前置没造出来，不能算验证过）"
+elif OCOMPILE "$WORK/omut" "$WORK/om1" 2>"$WORK/om1.log"; then
+  OM1RC=0
+  OM1OUT="$("$WORK/om1" 2>&1)" || OM1RC=$?
+  OM1MISSES=""
+  for CASE in O6 O7 O8 O14; do
+    /bin/echo "$OM1OUT" | grep -q "^FAIL $CASE" || OM1MISSES="$OM1MISSES $CASE"
+  done
+  if [ "$OM1RC" = "0" ] || [ -n "$OM1MISSES" ]; then
+    bad "O_MUT 恒绿失败判定没被抓红(rc=$OM1RC 漏报:$OM1MISSES)"
+  else
+    ok "O_MUT 变异验证（把失败伪装成成功会被 O6/O7/O8/O14 抓红）"
+  fi
+else
+  bad "O_MUT 编译失败$(tail -3 "$WORK/om1.log")"
+fi
+
+/usr/bin/sed 's|"打开系统设置失败.*勾选 Smoose。"|"打开系统设置失败" // MUTANT|' \
+    Sources/SettingsLauncher.swift > "$WORK/omut/SettingsLauncher.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/omut/SettingsLauncher.swift"; then
+  bad "O_MUT2 变异注入失败（前置没造出来，不能算验证过）"
+elif OCOMPILE "$WORK/omut" "$WORK/om2" 2>"$WORK/om2.log"; then
+  OM2RC=0
+  OM2OUT="$("$WORK/om2" 2>&1)" || OM2RC=$?
+  OM2MISSES=""
+  for CASE in O9 O10 O11 O12; do
+    /bin/echo "$OM2OUT" | grep -q "^FAIL $CASE" || OM2MISSES="$OM2MISSES $CASE"
+  done
+  if [ "$OM2RC" = "0" ] || [ -n "$OM2MISSES" ]; then
+    bad "O_MUT2 空壳失败文案没被抓红(rc=$OM2RC 漏报:$OM2MISSES)"
+  else
+    ok "O_MUT2 变异验证（抹掉原因/重试/手动路径会被 O9-O12 抓红）"
+  fi
+else
+  bad "O_MUT2 编译失败$(tail -3 "$WORK/om2.log")"
+fi
+
+/usr/bin/sed 's|com.apple.settings.PrivacySecurity.extension?privacy-accessibility|com.apple.preference.security?Privacy_Accessibility|' \
+    Sources/SettingsLauncher.swift > "$WORK/omut/SettingsLauncher.swift"
+# 只看代码、不看注释：注释里本来就会提到新扩展 ID，否则前置会被自己的文档误伤。
+OM3CODE="$(/usr/bin/sed -E 's://.*$::' "$WORK/omut/SettingsLauncher.swift")"
+if ! /bin/echo "$OM3CODE" | /usr/bin/grep -qF 'com.apple.preference.security?Privacy_Accessibility' \
+   || /bin/echo "$OM3CODE" | /usr/bin/grep -qF 'com.apple.settings.PrivacySecurity.extension'; then
+  bad "O_MUT3 变异注入失败（前置没造出来，不能算验证过）"
+elif OCOMPILE "$WORK/omut" "$WORK/om3" 2>"$WORK/om3.log"; then
+  OM3RC=0
+  OM3OUT="$("$WORK/om3" 2>&1)" || OM3RC=$?
+  OM3MISSES=""
+  for CASE in O1 O2 O3; do
+    /bin/echo "$OM3OUT" | grep -q "^FAIL $CASE" || OM3MISSES="$OM3MISSES $CASE"
+  done
+  if [ "$OM3RC" = "0" ] || [ -n "$OM3MISSES" ]; then
+    bad "O_MUT3 旧 deep link 回退没被抓红(rc=$OM3RC 漏报:$OM3MISSES)"
+  else
+    ok "O_MUT3 变异验证（换回旧 URL 会被 O1/O2/O3 抓红）"
+  fi
+else
+  bad "O_MUT3 编译失败$(tail -3 "$WORK/om3.log")"
+fi
+
+# ---------------------------------------------------------------------------
+# P 段：光标放大「开启不生效」（2026-11-07）
+# 真机：键 CGDisableCursorLocationMagnification 是对的（GUI 点开关只改这一个键），
+# 但第三方只写 plist 不会让系统即时加载；旧实现写完就报绿、Toggle 立刻变蓝 = 假绿。
+# 验「反相映射 / 写后独立读回 / 待重新登录文案 / Display 页 URL」。
+# ---------------------------------------------------------------------------
+/bin/mkdir -p "$WORK/pdir" "$WORK/pmut"
+/bin/cat > "$WORK/pdir/main.swift" <<'PSWIFT'
+import Foundation
+var failures = 0
+func require(_ c: @autoclosure () -> Bool, _ label: String) {
+    if !c() { print("FAIL \(label)"); failures += 1 }
+}
+
+require(CursorZoomPolicy.key == "CGDisableCursorLocationMagnification", "P1 偏好键必须是反相的 CG 键")
+require(CursorZoomPolicy.domain == ".GlobalPreferences", "P2 必须写全局域（standard 域不落盘）")
+require(CursorZoomPolicy.storedValue(enabled: true) == false, "P3 功能开必须写 false")
+require(CursorZoomPolicy.storedValue(enabled: false) == true, "P4 功能关必须写 true")
+require(CursorZoomPolicy.systemEnabled(stored: nil) == true, "P5 键缺失按系统默认开")
+require(CursorZoomPolicy.systemEnabled(stored: false) == true, "P6 存 false 表示功能开")
+require(CursorZoomPolicy.systemEnabled(stored: true) == false, "P7 存 true 表示功能关")
+
+require(CursorZoomPolicy.verdict(writeOK: false, readBack: false, expected: false) == .writeFailed,
+        "P8 写失败不能算成功")
+require(CursorZoomPolicy.verdict(writeOK: true, readBack: nil, expected: false)
+        == .readBackMismatch(expected: false, actual: nil), "P9 读不到必须报具体 mismatch，不能算成功")
+require(CursorZoomPolicy.verdict(writeOK: true, readBack: true, expected: false)
+        == .readBackMismatch(expected: false, actual: true), "P10 读回不一致必须带实际值")
+require(CursorZoomPolicy.verdict(writeOK: true, readBack: false, expected: false)
+        == .writtenPendingRelogin, "P11 一致才算写入完成（仍待重新登录）")
+require(CursorZoomApplyResult.writtenPendingRelogin.ok, "P12 只有写入完成允许保留开关")
+require(!CursorZoomApplyResult.writeFailed.ok && !CursorZoomApplyResult.suiteUnavailable.ok,
+        "P13 写入失败必须回弹")
+require(!CursorZoomApplyResult.readBackMismatch(expected: false, actual: nil).ok,
+        "P14 读回失败必须回弹")
+
+let okMsg = CursorZoomPolicy.statusMessage(.writtenPendingRelogin)
+require(okMsg.contains("已写入"), "P15 成功文案必须说明写好了")
+require(okMsg.contains("重新登录"), "P16 成功文案必须说明生效条件")
+require(okMsg.contains("系统设置") && okMsg.contains("开关"), "P17 必须给可操作路径")
+require(!okMsg.contains("已生效") && !okMsg.contains("立即生效"), "P18 不得伪装成即时生效")
+
+let failMsgs = [
+    CursorZoomPolicy.statusMessage(.suiteUnavailable),
+    CursorZoomPolicy.statusMessage(.writeFailed),
+    CursorZoomPolicy.statusMessage(.readBackMismatch(expected: false, actual: true)),
+]
+for (i, m) in failMsgs.enumerated() {
+    require(m.contains("重试"), "P19.\(i) 失败文案必须给可操作的重试")
+    require(m.contains("失败"), "P20.\(i) 失败文案必须标明失败")
+}
+require(CursorZoomPolicy.statusMessage(.readBackMismatch(expected: false, actual: true)).contains("true"),
+        "P21 mismatch 必须带实际读回值")
+require(CursorZoomPolicy.statusMessage(.readBackMismatch(expected: false, actual: nil)).contains("读不到"),
+        "P22 读不到必须明说，不能含糊成失败")
+
+let du = DisplaySettingsLauncher.urlString
+require(URL(string: du)?.scheme == "x-apple.systempreferences", "P23 URL scheme 正确且可解析")
+require(du.contains("com.apple.Accessibility-Settings.extension") && du.contains("?display"),
+        "P24 必须是辅助功能扩展 + Display anchor")
+require(!du.contains("Privacy_Accessibility") && !du.contains("PrivacySecurity"),
+        "P25 不得复用「去授权」的隐私页 URL")
+require(DisplaySettingsLauncher.manualPath.contains("辅助功能")
+        && DisplaySettingsLauncher.manualPath.contains("显示"), "P26 手动路径要指明两层位置")
+let dm = DisplaySettingsLauncher.failureMessage(reason: "-1712")
+require(dm.contains("-1712") && dm.contains("重试")
+        && dm.contains(DisplaySettingsLauncher.manualPath), "P27 失败反馈三要素")
+
+// 冷启动实证：带 anchor 的单 URL 只到 Accessibility 首页，必须「先基础、后 anchor」两步。
+let seq = DisplaySettingsLauncher.urlSequence()
+require(seq.count == 2, "P28 冷启动必须两步，单发 anchor 会只到首页")
+require(!seq[0].contains("?") && seq[0].contains("Accessibility-Settings.extension"),
+        "P29 第一步不能带 anchor（冷启动会被丢弃）")
+require(seq.count > 1 && seq[1] == seq[0] + "?display",
+        "P30 第二步必须是在第一步基础上加 display anchor")
+require(seq.count > 1 && URL(string: seq[0])?.scheme == "x-apple.systempreferences"
+        && URL(string: seq[1])?.scheme == "x-apple.systempreferences", "P31 两步 URL 都可解析")
+
+if failures == 0 { print("P-OK") } else { exit(1) }
+PSWIFT
+
+PCOMPILE() {
+  "$SWIFTC" $SMOOSE_SWIFT_EXTRA -Onone -sdk "$SDK" -target arm64-apple-macos14.0 \
+    -o "$2" "$1/CursorZoom.swift" "$1/SettingsLauncher.swift" "$WORK/pdir/main.swift"
+}
+/bin/cp Sources/CursorZoom.swift Sources/SettingsLauncher.swift "$WORK/pmut/"
+if PCOMPILE "$WORK/pmut" "$WORK/p" 2>"$WORK/p.log"; then
+  PRC=0
+  POUT="$("$WORK/p" 2>&1)" || PRC=$?
+  PFAILS="$(/bin/echo "$POUT" | /usr/bin/grep '^FAIL' || true)"
+  if [ "$PRC" != "0" ]; then PFAILS="$PFAILS P_EXIT(rc=$PRC 非零退出/崩溃)"; fi
+  /bin/echo "$POUT" | /usr/bin/grep -q 'P-OK' || PFAILS="$PFAILS P_NOMARK(缺 P-OK 完成标记)"
+  if [ -z "$PFAILS" ]; then ok "P 光标放大：反相映射 / 写后读回 / 待重新登录文案 / 两步 URL（31 项）"; else bad "P $PFAILS"; fi
+else
+  bad "P 编译失败$(/usr/bin/tail -3 "$WORK/p.log")"
+fi
+
+# P_W 接线守卫：纯逻辑全绿不代表指针页真的换了实现、也不代表读回真的独立。
+PWFAILS=""
+PCSRC="$(/usr/bin/sed -E 's://.*$::' Sources/CursorZoom.swift)"
+PVSRC="$(/usr/bin/sed -n '/^struct PointerTab/,/^}$/p' Sources/Views.swift | /usr/bin/sed -E 's://.*$::')"
+PSSRC="$(/usr/bin/sed -E 's://.*$::' Sources/SettingsLauncher.swift)"
+PBUILD="$(/usr/bin/sed -E 's:^#.*$::' build.sh)"
+
+# 前置单独成条：范围抓空时「没有旧实现」这类断言会假绿。
+/bin/echo "$PCSRC" | /usr/bin/grep -q '^enum CursorZoomPolicy' || PWFAILS="$PWFAILS PW_PRE1"
+/bin/echo "$PVSRC" | /usr/bin/grep -q '^struct PointerTab' || PWFAILS="$PWFAILS PW_PRE2"
+/bin/echo "$PSSRC" | /usr/bin/grep -q '^enum DisplaySettingsLauncher' || PWFAILS="$PWFAILS PW_PRE3"
+/bin/echo "$PBUILD" | /usr/bin/grep -qF 'CursorZoom.swift' || PWFAILS="$PWFAILS PW1"
+/bin/echo "$PBUILD" | /usr/bin/grep -qF 'SettingsLauncher.swift' || PWFAILS="$PWFAILS PW2"
+/bin/echo "$PCSRC" | /usr/bin/grep -qF 'CFPreferencesCopyValue' || PWFAILS="$PWFAILS PW3"
+/bin/echo "$PCSRC" | /usr/bin/grep -qF 'CursorZoomPolicy.verdict(' || PWFAILS="$PWFAILS PW4"
+/bin/echo "$PCSRC" | /usr/bin/grep -qF 'func apply(_ enabled: Bool) -> CursorZoomApplyResult' || PWFAILS="$PWFAILS PW5"
+/bin/echo "$PCSRC" | /usr/bin/grep -qF 'let writeOK = d.synchronize()' || PWFAILS="$PWFAILS PW6"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'isOn: cursorZoomBinding' || PWFAILS="$PWFAILS PW7"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'CursorZoomController.shared.apply(enabled)' || PWFAILS="$PWFAILS PW8"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'if result.ok { prefs.cursorZoomEnabled = enabled }' || PWFAILS="$PWFAILS PW9"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'CursorZoomPolicy.statusMessage(zoomResult)' || PWFAILS="$PWFAILS PW10"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'DisplaySettingsLauncher.open()' || PWFAILS="$PWFAILS PW11"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'Button("重试")' || PWFAILS="$PWFAILS PW12"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'if let zoomLaunchFailure' || PWFAILS="$PWFAILS PW13"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF '当前显示的是系统偏好值' || PWFAILS="$PWFAILS PW14"
+# 两步 URL 不能只是写在注释里：open() 必须真的依次发两个 URL。
+/bin/echo "$PSSRC" | /usr/bin/grep -qF 'static func urlSequence() -> [String] { [baseURLString, urlString] }' || PWFAILS="$PWFAILS PW18"
+/bin/echo "$PSSRC" | /usr/bin/grep -qF 'for (index, string) in urlSequence().enumerated()' || PWFAILS="$PWFAILS PW19"
+/bin/echo "$PSSRC" | /usr/bin/grep -qF 'let result = await openOne(string)' || PWFAILS="$PWFAILS PW20"
+/bin/echo "$PSSRC" | /usr/bin/grep -qF 'if index > 0 { try? await Task.sleep' || PWFAILS="$PWFAILS PW21"
+# 旧实现必须彻底消失：裸绑定 + onChange 直写 + 无返回值的 apply。
+/bin/echo "$PVSRC" | /usr/bin/grep -qF 'isOn: $prefs.cursorZoomEnabled' && PWFAILS="$PWFAILS PW15"
+/bin/echo "$PVSRC" | /usr/bin/grep -qF '.onChange(of: prefs.cursorZoomEnabled)' && PWFAILS="$PWFAILS PW16"
+/bin/echo "$PCSRC" | /usr/bin/grep -qF 'func apply(_ enabled: Bool) {' && PWFAILS="$PWFAILS PW17"
+if [ -z "$PWFAILS" ]; then ok "P_W 接线守卫（独立读回 / 失败回弹 / 生效提示 / 编译列表接线）"; else bad "P_W $PWFAILS"; fi
+
+# 三趟变异：先确认 MUTANT 真的注入，再要求具体断言变红。
+/bin/cp Sources/SettingsLauncher.swift "$WORK/pmut/SettingsLauncher.swift"
+/usr/bin/sed \
+  -e 's|guard writeOK else { return .writeFailed }|if !writeOK { return .writtenPendingRelogin } // MUTANT|' \
+  -e 's|return .readBackMismatch(expected: expected, actual: nil)|return .writtenPendingRelogin // MUTANT|' \
+  -e 's|return actual == expected|return actual == actual // MUTANT|' \
+  Sources/CursorZoom.swift > "$WORK/pmut/CursorZoom.swift"
+if [ "$(/usr/bin/grep -c 'MUTANT' "$WORK/pmut/CursorZoom.swift")" != "3" ]; then
+  bad "P_MUT 变异注入失败（前置没造出来，不能算验证过）"
+elif PCOMPILE "$WORK/pmut" "$WORK/pm1" 2>"$WORK/pm1.log"; then
+  PM1RC=0
+  PM1OUT="$("$WORK/pm1" 2>&1)" || PM1RC=$?
+  PM1MISSES=""
+  for CASE in P8 P9 P10; do
+    /bin/echo "$PM1OUT" | /usr/bin/grep -q "^FAIL $CASE" || PM1MISSES="$PM1MISSES $CASE"
+  done
+  if [ "$PM1RC" = "0" ] || [ -n "$PM1MISSES" ]; then
+    bad "P_MUT 恒绿写入判定没被抓红(rc=$PM1RC 漏报:$PM1MISSES)"
+  else
+    ok "P_MUT 变异验证（恒绿判定会被 P8/P9/P10 抓红）"
+  fi
+else
+  bad "P_MUT 编译失败$(/usr/bin/tail -3 "$WORK/pm1.log")"
+fi
+
+/usr/bin/sed 's|需重新登录才生效|已立即生效|' \
+  Sources/CursorZoom.swift > "$WORK/pmut/CursorZoom.swift"
+if ! /usr/bin/grep -q '已立即生效' "$WORK/pmut/CursorZoom.swift" \
+   || /usr/bin/grep -q '需重新登录才生效' "$WORK/pmut/CursorZoom.swift"; then
+  bad "P_MUT2 变异注入失败（前置没造出来，不能算验证过）"
+elif PCOMPILE "$WORK/pmut" "$WORK/pm2" 2>"$WORK/pm2.log"; then
+  PM2RC=0
+  PM2OUT="$("$WORK/pm2" 2>&1)" || PM2RC=$?
+  PM2MISSES=""
+  for CASE in P16 P18; do
+    /bin/echo "$PM2OUT" | /usr/bin/grep -q "^FAIL $CASE" || PM2MISSES="$PM2MISSES $CASE"
+  done
+  if [ "$PM2RC" = "0" ] || [ -n "$PM2MISSES" ]; then
+    bad "P_MUT2 假绿文案没被抓红(rc=$PM2RC 漏报:$PM2MISSES)"
+  else
+    ok "P_MUT2 变异验证（抹掉生效条件 / 宣称立即生效会被 P16/P18 抓红）"
+  fi
+else
+  bad "P_MUT2 编译失败$(/usr/bin/tail -3 "$WORK/pm2.log")"
+fi
+
+/bin/cp Sources/CursorZoom.swift "$WORK/pmut/CursorZoom.swift"
+/usr/bin/sed 's|static let urlString = baseURLString + "?display"|static let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" // MUTANT|' \
+  Sources/SettingsLauncher.swift > "$WORK/pmut/SettingsLauncher.swift"
+# 只看代码不看注释：文件顶部注释里本来就有旧 URL，否则前置会被自己的文档误伤。
+PM3CODE="$(/usr/bin/sed -E 's://.*$::' "$WORK/pmut/SettingsLauncher.swift")"
+if ! /bin/echo "$PM3CODE" | /usr/bin/grep -qF 'com.apple.preference.security?Privacy_Accessibility' \
+   || /bin/echo "$PM3CODE" | /usr/bin/grep -qF 'static let urlString = baseURLString + "?display"'; then
+  bad "P_MUT3 变异注入失败（前置没造出来，不能算验证过）"
+elif PCOMPILE "$WORK/pmut" "$WORK/pm3" 2>"$WORK/pm3.log"; then
+  PM3RC=0
+  PM3OUT="$("$WORK/pm3" 2>&1)" || PM3RC=$?
+  PM3MISSES=""
+  for CASE in P24 P25 P30; do
+    /bin/echo "$PM3OUT" | /usr/bin/grep -q "^FAIL $CASE" || PM3MISSES="$PM3MISSES $CASE"
+  done
+  if [ "$PM3RC" = "0" ] || [ -n "$PM3MISSES" ]; then
+    bad "P_MUT3 旧 deeplink 回退没被抓红(rc=$PM3RC 漏报:$PM3MISSES)"
+  else
+    ok "P_MUT3 变异验证（换回去授权 URL 会被 P24/P25/P30 抓红）"
+  fi
+else
+  bad "P_MUT3 编译失败$(/usr/bin/tail -3 "$WORK/pm3.log")"
+fi
+
+# 第四趟：抹掉两步法的第一步（冷启动只发 anchor）必须被 P28/P29/P30 抓红。
+/bin/cp Sources/CursorZoom.swift "$WORK/pmut/CursorZoom.swift"
+/usr/bin/sed 's|static func urlSequence() -> \[String\] { \[baseURLString, urlString\] }|static func urlSequence() -> [String] { [urlString] } // MUTANT|' \
+  Sources/SettingsLauncher.swift > "$WORK/pmut/SettingsLauncher.swift"
+if ! /usr/bin/grep -q 'MUTANT' "$WORK/pmut/SettingsLauncher.swift" \
+   || /usr/bin/grep -qF 'static func urlSequence() -> [String] { [baseURLString, urlString] }' "$WORK/pmut/SettingsLauncher.swift"; then
+  bad "P_MUT4 变异注入失败（前置没造出来，不能算验证过）"
+elif PCOMPILE "$WORK/pmut" "$WORK/pm4" 2>"$WORK/pm4.log"; then
+  PM4RC=0
+  PM4OUT="$("$WORK/pm4" 2>&1)" || PM4RC=$?
+  PM4MISSES=""
+  for CASE in P28 P29 P30; do
+    /bin/echo "$PM4OUT" | /usr/bin/grep -q "^FAIL $CASE" || PM4MISSES="$PM4MISSES $CASE"
+  done
+  if [ "$PM4RC" = "0" ] || [ -n "$PM4MISSES" ]; then
+    bad "P_MUT4 单发 anchor 没被抓红(rc=$PM4RC 漏报:$PM4MISSES)"
+  else
+    ok "P_MUT4 变异验证（去掉冷启动基础 URL 会被 P28/P29/P30 抓红）"
+  fi
+else
+  bad "P_MUT4 编译失败$(/usr/bin/tail -3 "$WORK/pm4.log")"
 fi
 
 echo

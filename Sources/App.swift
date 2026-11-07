@@ -106,14 +106,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.makeKeyAndOrderFront(nil)
             w.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
+            LogitechHIDPP.shared.setSettingsVisible(true)
             return
         }
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+            contentRect: NSRect(x: 0, y: 0,
+                                width: SettingsLayout.baseWidth,
+                                height: SettingsLayout.baseHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        // 与 SettingsWindow 的 SwiftUI 下限保持一致：窗口不能缩到比设计基准还小，
+        // 否则等比缩放会钳在 1× 而内容被裁切。
+        w.minSize = NSSize(width: SettingsLayout.baseWidth,
+                           height: SettingsLayout.baseHeight)
         w.title = "Smoose"
         w.titleVisibility = .visible
         w.isMovableByWindowBackground = false
@@ -129,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow = w
+        LogitechHIDPP.shared.setSettingsVisible(true)
     }
 
     /// 给 AnchorWindow 用的公开包裹。
@@ -139,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// 点关闭按钮时只隐藏窗口，不销毁 —— 这样下次双击图标还能叫回来。
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
+        LogitechHIDPP.shared.setSettingsVisible(false)
         return false
     }
 
@@ -172,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             queue: .main
         ) { _ in
             PointerController.shared.refresh(force: true)
+            // 唤醒后鼠标可能换了 DPI 档 / 接收器重新配对，重新探测并恢复同步。
+            LogitechHIDPP.shared.refresh()
         }
     }
 
@@ -185,7 +196,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showOnboardingIfNeeded() {
-        guard !ScrollEngine.trusted(prompt: false) else { return }
+        showOnboarding(force: false)
+    }
+
+    /// `smoose://onboarding` 本地诊断入口：即使已授权也能重新看到引导页，
+    /// 用来复测「去授权」跳转，不必去动 TCC 授权（改 TCC 会让 App 立刻失去权限）。
+    private func showOnboarding(force: Bool) {
+        guard force || !ScrollEngine.trusted(prompt: false) else { return }
+        if let existing = onboardingWindow {
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self else { return }
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 460),
@@ -226,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// 兜底入口：多屏下 status item 被系统挂到副屏/幽灵屏时，用户仍可用
     ///   open smoose://open      —— 主屏中心弹出面板
     ///   open smoose://settings  —— 打开设置窗口
+    ///   open smoose://onboarding —— 本地诊断，强制显示首次授权引导页
     private func registerURLEntry() {
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -259,11 +281,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
         let url = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue ?? ""
         NSApp.activate(ignoringOtherApps: true)
-        if url.contains("settings") {
+        if url.contains("onboarding") {
+            showOnboarding(force: true)
+        } else if url.contains("settings") {
             openSettingsWindow()
             // smoose://settings?tab=game —— 直达某一页。认不出的 tab 名保持当前页，
             // 不影响开窗本身（预览 / 远程诊断都走这里）。
             if let tab = SettingsTab.fromURL(url) { NavState.shared.selectedTab = tab.rawValue }
+            // smoose://settings?w=1080&h=1002 —— 本地诊断入口，脚本化把窗口设成指定尺寸，
+            // 用来验证「窗口放大 → 内容等比放大」；非法参数会被忽略（见 SettingsLayout）。
+            if let size = SettingsLayout.debugWindowSize(from: url) {
+                settingsWindow?.setContentSize(size)
+                settingsWindow?.center()
+            }
         } else {
             StatusBarController.shared.showAtCenter()
         }

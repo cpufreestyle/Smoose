@@ -109,13 +109,15 @@ boostModifiers/boostFactor 且覆盖 speed；「跳过此 App」仍 enabled=fals
 | S25–S27 | 文本守卫 `Views.swift` ↔ `ScrollBoost.maxScale` 同源 | 滑条写死上限、引擎上限被改成 0 / NaN |
 | S28–S29 | 编译真 `Sources/ScrollAxis.swift` 验键位冲突判定 + Views 接线 | 加速键与透传键同键时无提示 |
 | S30 | 文本守卫 `LogitechHIDPP` 事件驱动 | 回到 5 秒轮询、漏注册 removal、Unmanaged 引用泄漏 |
-| S31 | 文本守卫 `PointerController` / `Model.swift` 配置通知 | 通知没真发、签名没判空、兜底轮询退回过短 |
+| S31 | 文本守卫 `PointerController` / `Model.swift` 配置通知 | 通知没真发、签名没判空、轮询太长(>10s)或退化成全量枚举、漏插拔回调、读数没进签名 |
 | S32 | 编译真 `Sources/Updater.swift` 验 `dismiss()` 不丢已安装更新 | 守卫被删、守卫顺序错、busy 守卫被拿掉 |
 | S33–S34 | 文本守卫菜单栏 / 关于页更新出口 | 菜单栏不显示下载/安装/待重启、加回「稍后再说」、关于页出口被挤掉 |
+| S35–S39 | 游戏页出口 / 合成事件相位 / 点击刹车 / 接线守卫 | 相位常量漂移、收尾帧丢失、UI 与引擎脱节 |
+| **I**（2026-11-06） | 编译真 `PointerController.swift` 验加速度签名对 **HID 参数读数漂移**敏感（14 项） | 系统把 `HIDMouseAcceleration` 重置回默认后永久短路（静置后起步发黏） |
 
 用法：
-    ./run_tests.sh             # A B C D E F F2 G G2 G2b G2c G3 H（离线）
-    ./run_tests.sh --device    # + D（需 Smoose 已跑且已授权）
+    ./run_tests.sh                                        # 普通终端，离线，PASS=27 FAIL=0
+    SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agent 沙箱，Swift 宏需子进程）
 
 > ⚠️ **`--device` 的真实边界（2026-10-27 实测确认，勿再重复尝试）**：`--device` 段当前
 > **不在 `run_tests.sh` 里实现**，SPEC 早期把它列为 D 段真机断言，但没有任何可执行断言。
@@ -431,7 +433,7 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 - D8 2026-10-22 harness `PASS=5 FAIL=0`（A 插值 / B profile / C ButtonAction / D 自动更新决策 / E 构建签名）。
 - D9 Asset 的 snake_case 键映射（2026-10-22 真实缺陷回归）：GitHub 发 `browser_download_url` / `content_type`，而 `Asset` 若没有 `CodingKeys`，合成解码按属性名 camelCase 查找，`name` 因为两种拼写相同仍能解出，于是「发现了新版但 `url=nil`」——用户看得到新版却永远下载不到安装包（真机「关于」页表现为「版本源没有提供安装包地址」）。D9 snake_case URL / D9b 仅 MIME / D9c 仅 `.zip` 后缀 / D9d 非归档 asset 忽略。
 - D9e `name` 兜底只在它本身是合法版本号时才生效：`{"name":"Smoose 1.5.0"}` 这种 GitHub release 标题 `SemVer` 解析不出来，必须判 `malformed` 而不是瞎猜一个版本号；`{"name":"1.5.0"}` 才走 `.available("1.5.0")`。（2026-10-22：这条断言原本写反了，与真源码行为相反，且一直被下面的 FIFO 假绿掩盖。）
-- **D11 harness 段数演进（快照，非当前值）**：2026-10-27 第七轮为 `PASS=11 FAIL=0`（A / B / C / D / E / G / G2 / G3 / F / F2 / H）；随后 G2b（D16，11→12）、G2c（D17，12→13）相继加入。**当前值以 D17 为准：`PASS=13 FAIL=0`，十三段 A B C D E G G2 G2b G2c G3 F F2 H。** 上面各节的 `PASS=4` / `PASS=5` / `PASS=11` 都是当日快照。
+- **D11 harness 段数演进（快照，非当前值）**：2026-10-27 第七轮为 `PASS=11 FAIL=0`（A / B / C / D / E / G / G2 / G3 / F / F2 / H）；随后 G2b（D16，11→12）、G2c（D17，12→13）相继加入。D17 当时是 `PASS=13 FAIL=0`（十三段 A B C D E G G2 G2b G2c G3 F F2 H）；此后持续增加，**当前值为 2026-11-06 的 `PASS=27 FAIL=0`**（含 I 段 14 项）。上面各节的 `PASS=4` / `PASS=5` / `PASS=11` / `PASS=13` / `PASS=26` 都是当日快照，别当成现值。
 - **D16 upToDate 必须有可见反馈（2026-10-29，用户实测反馈「检测更新没有成功」）**：检查成功且已是最新时，
   `Updater.check` 必须把 `phase` 置为 `.upToDate(当前版本号)` 而不是 `.idle`，`UpdateStatusView` 必须显示
   「已是最新版本 v<当前版本>」。此前 `.idle` 映射 `EmptyView`，用户点「检查更新」后除时间戳外零反馈，
@@ -539,9 +541,11 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 - **D25 指针配置生效延迟**：`PointerController` 原来是 6 秒 `refresh(force: false)`。
   这个轮询唯一真正有用的场景是「用户刚改完配置」，却要等最多 6 秒才套用。
   改为：`Preferences.persist()` 里比对指针配置签名（`pointerAccelManaged|accelerationValue|includeBuiltIn`），
-  真的变了才发 `.smoosePointerConfigChanged`，PointerController 收到立刻 refresh；
-  兜底轮询拉长到 60 秒且只在 `pointerAccelManaged` 为真时才跑（没接管时 `apply()` 第一行就 return）。
+  真的变了才发 `.smoosePointerConfigChanged`，PointerController 收到立刻 refresh。
   签名判空是必须的：不判空的话每次 persist（哪怕改的是滚动参数）都重发通知，等于又变回轮询。
+  **2026-11-06 契约反转（D30）**：当时把兜底拉长到 60 秒，是因为每轮都全量枚举 IOKit；
+  但那让「系统把 HID 加速度重置回默认」完全无法自愈（详见 HANDOFF §4.5）。现在枚举交给
+  `IOHIDManager` 插拔回调，轮询只调 `apply(force:false)` 读属性，因此周期收紧到 **8 秒**。
 - **D26 加速键与透传键配同一个键时无提示**：引擎里 bypass 先判、boost 后判，
   同键时透传赢，加速永远不触发——这是确定行为不是 bug，但界面两处各配各的，
   用户配完不知道自己白配了。新增 `ScrollBoost.conflicts(bypass:boost:)` 纯函数，
@@ -550,9 +554,18 @@ StoredState 注入用 <data> 包装 JSON（不是 <string>），defaults import 
 **断言**：S28 编译真 `Sources/ScrollAxis.swift` 验冲突判定（含「都没配」「只配一边」「不同键」都不提示）；
 S29 文本守卫 Views 真的接了 `ScrollBoost.conflicts`；
 S30 文本守卫罗技侧无 `scheduledTimer(5.0)` / 无 `pollTimer` / 两个回调都注册 / `passRetained` 与
-`takeUnretainedValue` 配平；S31 文本守卫通知真的发（不是只定义）、签名判空在、兜底 ≥ 30 秒。
+`takeUnretainedValue` 配平；S31 文本守卫通知真的发（不是只定义）、签名判空在、
+**轮询周期 ≤ 10 秒**（S31g，原为 ≥30 秒，2026-11-06 反转）、轮询里是 `apply(force:false)`
+而不是全量枚举（S31h）、两个 IOHIDManager 回调都注册（S31i/j）、读数进签名（S31k）。
 变异验证：`conflicts` 恒返 false → S28e/S28f 红；删 removal 回调 → S30b 红；
-删 persist 里的发通知块 → S31b/S31e 红；兜底改回 6.0 → S31g 红。
+删 persist 里的发通知块 → S31b/S31e 红；兜底改回 6.0 → S31g 红（旧语义）。
+
+**I 段（2026-11-06，14 项，编译真 `PointerController.swift`）**：核心是 I2 —— 设备当前读数
+从 `0` 变成 `163840`、而配置与 registryID 都不变时，签名**必须改变**。I1/I10/I12/I13 反向保证
+签名幂等、设备顺序无关、亚 1 计数抖动不误判、期望签名与全符合读数相等（否则每 8 秒白写）。
+变异验证：把读数从 `PointerAccelSignature.make` 里移除（等价旧实现）→ **I2/I3/I4/I11b/I14 五条报红**。
+真机端到端：人为把接口改回 2.5 后 6 秒自动纠回 0；退出 App 的负例 12 秒保持 2.5，
+排除「系统自己改回 0」这个替代解释。I 段验的是决策输入（签名），不是端到端 IOKit 写入。
 
 ## 24. 更新流程的菜单栏出口（2026-11-01，真机端到端验证）
 
@@ -593,9 +606,14 @@ S34 文本守卫「关于」页原有出口没被挤掉。
 评级与建议是纯函数 `GameGrade`，UI 与 harness 共用同一份阈值，不会出现「界面显示良好、
 harness 按另一套数字判」的漂移。
 
-**测不到的不做**：实际传感器 DPI 存在鼠标内部配置文件里，macOS 读不到；HID++ 2.0 的 DPI 回读
-（`getFeatureInfo(0x2201)`）实测回读全是 0。所以 UI 明确写「这里不显示 DPI」并说明原因，
-不拿假数字糊弄。
+**测不到的不做**：实际传感器 DPI 存在鼠标内部配置文件里，IORegistry / `hidutil` 读不到；
+本页只显示能实读的回报率（ReportInterval）与 `HIDPointerResolution` 常量，不拿假 DPI 糊弄。
+
+> ⚠️ **2026-11-06 修正**：原文写「HID++ 2.0 的 DPI 回读实测全是 0，所以 macOS 读不到」，
+> 该结论**已被推翻**。当时用的是错误报文（把 `0x22` 当 feature index、function 写成 `0x03`）。
+> 改为先 `getFeature(0x2201)` 拿 index、再读 `0x18`/`0x28` 后，本机实读到
+> 100–25600 DPI / 步长 50 / 当前 5400 / 默认 1600。传感器 DPI 现在显示在「指针」页
+> 的罗技专属区（§29）；本页说明同步改为「不在 IORegistry 里，改由 HID++ 实读」。
 
 ### 25.1 启动即崩：`1..<0` 运行时陷阱
 
@@ -795,6 +813,244 @@ S39 十三条文本守卫（先剥注释）：`post()` 写三个字段、帧循�
 - **Mos 的 `CGEventPostToPid` 直投目标进程**：Mos 用它消除崩溃与「动量不跟随光标」，
   但 Smoose 的 `.cghidEventTap` 投递 + 回声守卫已经稳定跑了 20 多轮，不赌。
 
+## 27. 设置窗口放大后内容等比联动（2026-11-06）
+
+**现象**：用户反馈「页面放大以后，它的内容没放大」——设置窗口拉大后，内容仍按原始点数居中，四周留白。
+
+**契约**
+
+- `SettingsLayout.baseWidth = 560`、`baseHeight = 620`、`maxScale = 2.0`。
+- `uiScale(w, h) = min(2, max(1, min(w/560, h/620)))`：取宽高两个方向**较小**的比例，保证放大后不裁切；小于基准钳到 1；0 / 负尺寸返回 1。
+- `logicalSize(w, h) = (w/s, h/s)`：先按逻辑尺寸布局、再 `scaleEffect(s)`，视觉尺寸恰好等于窗口尺寸，既铺满又不溢出。
+- `debugWindowSize(from:)`：解析 `smoose://settings?w=…&h=…`，只接受 300…4000 的整数/小数点数；缺参、非数字、越界一律返回 nil。
+- `ScaledTabContent` 只包**每个标签页的内容**，`TabView` 必须是根视图。把整个 TabView 包进 `GeometryReader + scaleEffect` 会让 macOS 的系统标签栏被裁掉（真机验证）。
+- 顶部 `tabBarInset = 44` 放在 `scaleEffect` 之后，是固定实际点数、不参与缩放；计算 s 前先从可用高度扣掉它。
+- `baseHeight` 必须是 620 而不是窗口最初的 520：按 520 排版「关于」页会把说明压成单行并裁掉页脚（完整内容约 617pt）。
+- `NSWindow` 初始 contentRect 与 `minSize` 都取自 `SettingsLayout`，不得再写死数字。
+
+**断言**
+
+- `J`（23 项，编译真 `Views.swift`）：基准不放大、2× 放大、大窗口约 1.62×、只变一个方向取 min、2× 封顶、小于基准钳 1、0/负防御、`logicalSize × s == 窗口尺寸`（7 组尺寸）、逻辑宽度不窄于基准、逻辑高度回到基准、诊断入口 7 项。
+- `J_W`（文本接线守卫，先剥注释）：六个页全部出现 `ScaledTabContent {`、`.tag(0)…tag(5)` 齐全、`TabView(selection: $nav.selectedTab)` 仍是根视图。
+- `J_MUT`（变异验证）：把 `uiScale` 的 return 换成 `return 1 // MUTANT`，J2/J3/J4/J14/J15 必须逐条报红；变异注入本身失败也要报红，不能静默跳过。
+- `S35c` 守卫同步改为校验「缩放容器 + 游戏页标签 + tag(4)」绑在同一行，不是放宽成只查关键词。
+
+**真机验证**：1080×900 窗口截图确认标签栏六个标签完整、图标不压标签文字、顶部说明恢复两行、页脚「开源致敬」可见、内容明显放大且文字清晰、无裁切。harness `PASS=30 FAIL=0`。
+
+**取舍 / 未做**
+
+- 只拉宽不拉高时 s=1，内容横向铺开但字号不变：按宽度放大必然裁掉纵向内容，宁可留白。
+- 「关于」页 420pt 内容块仍居中固定宽，放大后左右仍有留白（比例从 ~61% 降到 ~25%）；未改成流式全宽，避免长说明一行到底、反而更难读。
+- 未做用户可选的缩放档位（100% / 125% / 150%）：自动跟随窗口已覆盖反馈场景，需要时再加。
+
+## 28. 指针线性模式契约（2026-11-06，二次纠正根因）
+
+**背景**：用户第三次反馈「静止后起步发黏没修好」。静置 70 秒每 2 秒采样，两个鼠标接口的
+`HIDMouseAcceleration` 恒为 **0**；把全部 HID 服务也写成 0 后用户**仍然发黏**。
+因此 §4.5 记录的「系统把值重置回 163840、8 秒轮询补回」不是根因（作为防御兜底保留）。
+真因是 **0 只代表「最小加速度」，不是关闭加速**：系统仍走低速增益 <1 的加速曲线，
+用户说的「慢慢恢复正常」是同一次移动内速度上升，不是等待轮询。
+
+**核对依据**：LinearMouse `PointerDevice.pointerAcceleration` 注释
+`-1 means acceleration and sensitivity are disabled`；`setPointerAcceleration(-1)` 写
+`IOFixed(-65536)`；Sonoma+ 另有 `HIDUseLinearScalingMouseAcceleration`，
+`Device.supportsLinearPointerScaling` 在设备读不到该属性时回退到只写 -1。
+
+**契约**
+
+- `PointerAccelPolicy.plan(0)` → `(ioFixed: -65536, linear: 1)`；`plan(2.5)` → `(163840, 0)`；
+  `isLinear(value <= 0.0001)`。
+- `apply()` 必须**双写** `HIDUseLinearScalingMouseAcceleration` 与 `accelKey`，写后读回两者；
+  `PointerAccelSnapshot.linear` 参与 `PointerAccelSignature.make`（设备重枚举丢标志要能发现）。
+- 设备不支持线性键（写入前后均为 nil）→ `linearOutcome` 判定为回退，`ok=true`、
+  `settled=nil`；**不得**报红，也不得把失败态固化成短路。支持但写入失败 → `ok=false` 并存实际回读值重试。
+- 「恢复系统默认」的基线来自 `IOHIDSystem.HIDParameters["HIDMouseAcceleration"]`
+  （`IORegistryEntryFromPath("IOService:/IOResources/IOHIDSystem")`，本机 163840 = UI 2.5），
+  禁止用「App 启动时的设备读数」（那可能已是自己写过的 0 / -1）。`restoreDefaults()` 同时还原线性标志。
+
+**断言**
+
+- K 段 20 项：取值语义、签名含线性读数且顺序无关、回退/重试分支。
+- `K_W` 9 条接线守卫：`plan` 调用、双写、读回、`outcome.ok`、签名、restore、`systemDefaultAcceleration` 路径。
+- `K_MUT`：plan 换回「恒写 0」→ K1/K2/K6 报红；`K_MUT2`：把硬件不支持误判为失败 → K16/K19 报红；
+  两趟都要求「变异注入失败本身报红」的前置自检。
+
+**真机验证**：两个 USB Receiver 回读 `-65536`、线性键 `(null)`（回退路径）；状态区灰色无
+「写入未生效」；静置 32 秒参数保持；`codesign --verify --deep --strict` 通过；
+全 harness `PASS=34 FAIL=0`。
+
+**未覆盖**：手感是否真的不再发黏是主观指标，只能人工验收；`HIDPointerResolution` 仍不可写，
+线性后若整体速度不合适用「自定义移动速度倍率」补偿。
+
+---
+
+## 29. HID++ 0x2201 真实 DPI 能力（2026-11-06）
+
+用户指出鼠标 DPI 上限 25600，而罗技区 Picker 只有 400…3200。修复范围远大于「把数组加长」：
+旧链路的档位、当前值、「支持 HID++ 2.0」状态、「已应用硬件 DPI」成功提示**全是假的**。
+
+**协议契约**（对齐 libratbag `hidpp20.c` 的 `CMD_ADJUSTABLE_DPI_*`）：
+
+| 项 | 值 |
+| --- | --- |
+| report / deviceIndex | `0x11` 长报文 / `0x01` 配对鼠标 |
+| featureIndex | **必须由 root feature `getFeature(0x2201)` 查询**，本机 `pid=0xc547` = 7；`0xc548` = 0 表示不支持 |
+| address | `(function << 4) \| swId(0x8)` → `0x08` count / `0x18` DPI list / `0x28` 当前 DPI / `0x38` 写入 |
+| DPI 编码 | 16-bit big-endian 原始值，不缩放 |
+| DPI list | `p[0]`=sensor，之后每 2 字节一项；`0x0000` 结束；`>0xE000` 的项是步长（`value-0xE000`） |
+| 写入回显 | `p[1..2]` 回显 DPI；`0` 表示协议 v0 不回显，仍需读回校验 |
+
+本机真机回报：`00 00 64 e0 32 64 00` → 档位 **[100, 25600]**、步长 **50**；
+`00 15 18 06 40` → 当前 **5400**、默认 **1600**。
+
+**契约（不可回退）**：
+
+1. 档位只能来自设备回报；解析失败 / 未探测到时**不显示**任何档位，**不**用硬编码列表兜底。
+2. `setDPI` 必须：(a) 已通过真实探测拿到 featureIndex；(b) 检查 `IOHIDDeviceSetReport` rc；
+   (c) 校验设备回显；(d) 发 `0x28` 读回且 `readBack == target`。四项全过才报成功，
+   否则显示具体拒因且不更新本地 `currentDPI`。
+3. 写入必须是**显式动作**（「应用」按钮）；禁止用选中项变化监听自动下发，
+   否则打开页面就会因同步当前值触发一次 SET。
+4. 探测/写入放后台串行队列，不阻塞主线程；响应慢要重试，过期结果用 generation 作废。
+
+**测试**：harness **L 段 30 项**（真机字节解析 / 报文 / 写入判定五类拒因 / 解析防御）、
+**L_W 13 条接线守卫**、**L_MUT / L_MUT2** 两趟变异验证（失败报绿、写死 0x22 必须报红）。
+全 harness `PASS=38 FAIL=0`。
+
+**真机**：App 内显示「HID++ 0x2201 已探测: 100–25600 DPI (步进 50)，当前 5400 DPI」，
+Picker 5,400 DPI；独立幂等写入 5400→5400 回报回显 5400、读回 5400 → VERIFIED（未改动设置）。
+`codesign --verify --deep --strict` 通过，Mach-O `63d18d35…`。
+
+**未覆盖**：只验证了幂等写入，未实测「改成另一个 DPI 值」（不擅自改动用户硬件设置）；
+设备休眠时探测可能超时，UI 提示点「刷新」重试。**未发版**。
+
+---
+
+## 30. 内建触控板加速度隔离契约（2026-11-06）
+
+§29 收尾时真机截图发现「状态」区整段红字，第三行为
+`Apple Internal Keyboard / Trackpad … 回读 -0.000 … ⚠️ 写入未生效`。
+用户勾选的旧开关把一台**不接受写入**的设备拉进 `eligible`，`allOK=false` 把整段标红。
+这是假失败，不是写入失败；开关本身是没有载体的假选项。
+
+**契约（不可回退）**：
+
+1. 设备范围与开关解耦：`PointerAccelPolicy.scope(builtIn:) -> PointerAccelScope`
+   恒把 builtIn 判为 `.systemManagedBuiltIn`；`eligible()` 只返回外接鼠标 rid。
+   `pointerIncludeBuiltIn` 保留为 `StoredState` 解码兼容字段，不再影响任何行为；
+   UI 不得再出现对应 Toggle（旧存档为 true 也必须忽略）。
+2. 跳过必须可见：`PointerAccelStatus.skippedLine(name:)` 返回带设备名与原因的状态行，
+   不含 `⚠️`、不含「写入未生效」；`apply()` 必须把每台 skipped 设备追加到 `lines`。
+   静默跳过是另一种假绿。
+3. 跳过不参与成功判定：`allOK` 只吃 `writeResults`（真正执行过写入的设备结果），
+   空数组判 false（只有触控板时不能报「已接管」）。`readings` / 签名只由 `eligible`
+   生成，触控板读数不得触发轮询重写。
+4. `restoreDefaults()` 仍全量还原，负责清理旧版本对触控板的历史写入。
+
+**测试**：harness M 段 16 项 + M_W 9 条接线守卫 + 三趟变异
+M_MUT / M_MUT2 / M_MUT3 —— 把触控板重新纳入写入、把 `allOK` 改成恒真、抹掉跳过原因，
+都必须被具体断言抓红。全 harness `PASS=43 FAIL=0`。
+
+**真机**：状态区三行灰白（无红字）：两行 USB Receiver 回读 -1.000、系统默认 2.500，
+一行 `内建触控板由系统管理（不写入加速度）`。Mach-O `6b0fe9c8…`，验签通过、
+TeamIdentifier 不变。**未发版、未提交**。
+
 ---
 
 **2026-11-03 清理轮**：`/Applications` 的 7 个隔离备份移至 `~/.smoose-rollbacks/`（点号目录不进 Spotlight，`MANIFEST.txt` 记录版本 / sha256 / 理由），`~/Downloads` 的 2 个重复副本 + `Smoose-1.3.0.zip` 移至 `~/.Trash/smoose-cleanup-2026-11-03/`；全程 `mv` 可还原，harness 复跑 `PASS=26 FAIL=0`。
+
+---
+
+## 31. 硬件 DPI 快捷键切换后的自动同步契约（2026-11-06）
+
+用户按鼠标 DPI 键切档后，界面必须跟上；但**同步 ≠ 接管**，Smoose 只读不写。
+
+**依据**：Solaar `notifications.py` 中 `0x2201` 无 DPI 变更通知（ONBOARD_PROFILES 只给
+resolution_index、不带数值），所以必须主动 `GET_SENSOR_DPI`。独立进程实测
+`IOHIDDeviceOpen(None)` 预热后 15/15 读到当前 DPI —— 早期「非抢占收不到响应」是
+接收器休眠误判；因此同步连接**必须非独占**，不得 `SeizeDevice`。
+
+**契约（不可回退）**：
+
+1. `HIDPPWatchSession` 只读：禁止 `0x38` / `HIDPPWrite` / `setDPI`；任何情况下不回写硬件。
+2. 门禁 `windowVisible && dpiPageVisible && !isWriting && probeInfo != nil`，**不含 `appActive`**。
+   硬件切档常发生在 Smoose 非前台时，加前台门禁等于关掉同步（真机连拍第 41 帧起复现）。
+3. `HIDPPDPISync.outcome` 必须区分 `hardwareChanged` / `noChange` / `readFailed` /
+   `outOfRange` / `ignoredWhileWriting`；读失败不得伪装成 noChange，写入期间观测值不得
+   被当成硬件切换。
+4. 状态文案含「未回写硬件」，不得复用「已应用硬件 DPI」；`warmupRequests >= 2`，
+   连续失败退避间隔必须大于正常轮询。
+5. 非常规档位（3300）仍要出现在 Picker，但整体受设备 100–25600 能力约束。
+
+**测试**：N 段 23 项 + N_W 26 条守卫（含「同步只读」「无 appActive」）+ 三趟变异
+N_MUT / N_MUT2 / N_MUT3。真机：5400 → **14700** 端到端同步，重启后一致，
+独立探针复读硬件真值确认未被回写。详见 `HANDOFF.md` §4.11。
+
+---
+
+## 32. 系统设置跳转契约（2026-11-07）
+
+**两个独立故障**：① System Settings 进程长时间运行后不响应 AppleEvent，`open` 报
+`-1712` 并弹系统级英文「not responding」（macOS 自身状态，重启进程即恢复）；
+② 旧 anchor `Privacy_Accessibility` 在 macOS 27.3 落到 **Device Control and Data Access**，
+而 `com.apple.Accessibility-Settings.extension` 是辅助功能功能设置页 —— 都不是授权列表。
+
+**契约（不可回退）**：
+
+1. `AccessibilitySettingsLauncher.urlString` 使用
+   `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?privacy-accessibility`；
+   禁止回退 `com.apple.preference.security?Privacy_Accessibility`。
+   在不支持精确子页跳转的系统上安全退化为「隐私与安全性」首页，UI 必须给出手动路径
+   `系统设置 → 隐私与安全性 → 辅助功能`。
+2. 必须用 `NSWorkspace.open(_:configuration:completionHandler:)`；只有 `error == nil`
+   才算 `.opened`，空白原因也判 `.failed` 并补明确原因。
+3. `failureMessage` 三要素：具体原因 + 「重试」+ 手动路径；视图显示红字与重试按钮。
+   禁止回到裸 `NSWorkspace.shared.open(url)`（失败被吞 + 英文系统弹窗）。
+4. App 不强杀系统进程；`smoose://onboarding` 强制显示引导页用于复测，不改 TCC 授权。
+
+**测试**：O 段 14 项 + O_W 13 条接线守卫（含前置非空、build.sh 接线、旧实现消失）+
+三趟变异 O_MUT / O_MUT2 / O_MUT3。真机点击「去授权」→ 系统设置 `Privacy & Security`、
+无报错弹窗、引导页无红字。全 harness `PASS=53 FAIL=0`。详见 `HANDOFF.md` §4.12。
+**未发版、未提交**。
+
+---
+
+## 33. 光标放大开关与两步 Display deep link 契约（2026-11-07）
+
+**问题**：「快速移动鼠标时放大光标图标」开关显示开启但功能没生效。真机确认
+`CGDisableCursorLocationMagnification` 键是对的（系统设置点开关时全局域只有它变化），
+但这个偏好由 WindowServer 在**登录会话启动时**加载；第三方写 plist 不会热更新，
+`defaults write` 后系统设置 GUI 不刷新、切页重进也不刷新。
+旧 `apply()` 无返回值、写完即报绿 = 假绿。
+
+**契约（不可回退）**：
+
+1. `CursorZoomController.apply() -> CursorZoomApplyResult`。写后必须用
+   `CFPreferencesCopyValue` 独立读回；**禁止**用 `UserDefaults(suiteName:)` 的
+   进程内缓存自检（写完立刻读必然是新值，还是假绿）。
+2. `CursorZoomPolicy.verdict` 分 case：`writeFailed` / `readBackMismatch(expected:actual:)` /
+   `suiteUnavailable` / `writtenPendingRelogin`。读不到、不一致、写失败都不得算成功；
+   mismatch 必须带具体期望值与实际值。
+3. `.writtenPendingRelogin` **只表示偏好写好了**。状态文案必须同时含「已写入」、
+   「重新登录」、可操作路径；禁止「已生效 / 立即生效」字样。
+4. `CursorZoomApplyResult.ok` 只有 `.writtenPendingRelogin` 为真；失败时 Toggle 回弹。
+   视图必须用自定义 `Binding`（set 里写入、成功才更新 `prefs`），不得回到
+   `.onChange(of:)` 直接改状态。
+5. 页面常驻「当前显示的是系统偏好值」说明，避免蓝色开关被误读成即时生效。
+6. `DisplaySettingsLauncher.urlSequence()` 必须是两步
+   `[baseURLString, baseURLString + "?display"]`。冷启动单发带 anchor 的 URL
+   只到 `Accessibility` 首页（实测 `?Seeing_Display` / `?display` /
+   `?Accessibility_Display` / `?pane=display` / `?page=display` 全部如此）；
+   两步法 0.4 / 1.0 / 2.0s 三种间隔都稳定到 `Display`。
+   第二步失败必须返回带具体原因的 `.failed` 并给重试，不得报 `.opened`。
+7. `manualPath` 保持 `系统设置 → 辅助功能 → 显示 → 摇动鼠标指针以定位`。
+
+**测试**：P 段 31 项 + P_W 21 条接线守卫（含前置非空、独立读回、失败回弹、
+两步真的接线、旧实现消失）+ 四趟变异 P_MUT / P_MUT2 / P_MUT3 / P_MUT4，
+均要求具体 case 报红。全 harness `PASS=59 FAIL=0`。
+
+**真机**：点开关 plist `0 → 1 → 0`（两次读回均通过，最终恢复用户原值）、
+状态行显示待重新登录文案、无红字；冷启动点按钮 → 系统设置 `Display`、
+`Shake mouse pointer to locate` 可见、无报错弹窗。
+**未覆盖**：未真机构造读回失败负例；未实测重新登录后摇动放大效果（macOS 侧行为）。
+详见 `HANDOFF.md` §4.13。**未发版、未提交**。

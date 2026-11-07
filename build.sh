@@ -33,6 +33,7 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
   "$ROOT"/Sources/UpdateModel.swift \
   "$ROOT"/Sources/Updater.swift \
   "$ROOT"/Sources/Views.swift \
+  "$ROOT"/Sources/SettingsLauncher.swift \
   "$ROOT"/Sources/App.swift \
   "$ROOT"/Sources/CursorZoom.swift \
   "$ROOT"/Sources/LogitechHIDPP.swift \

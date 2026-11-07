@@ -183,6 +183,8 @@ struct StoredState: Codable {
     // 指针（LinearMouse 那一半）
     var pointerAccelManaged: Bool = false
     var pointerAccelerationValue: Double = 0
+    /// 旧存档兼容字段：内建触控板实测不接受加速度写入，2026-11-06 起
+    /// 不再有任何 UI 或写入逻辑使用它，仅为旧 JSON 能继续解码而保留。
     var pointerIncludeBuiltIn: Bool = false
     var pointerSpeedManaged: Bool = false
     var pointerSpeedFactor: Double = 1.0
@@ -316,6 +318,7 @@ final class Preferences: ObservableObject {
     @Published var bindings: [String: String] = [:]
     @Published var pointerAccelManaged: Bool = false
     @Published var pointerAccelerationValue: Double = 0
+    /// 兼容位，不再绑定任何控件、也不参与设备筛选（见 StoredState 同名注释）。
     @Published var pointerIncludeBuiltIn: Bool = false
     @Published var pointerSpeedManaged: Bool = false
     @Published var pointerSpeedFactor: Double = 1.0
