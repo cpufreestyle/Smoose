@@ -1086,6 +1086,15 @@ CONNECT 直接回 503 / TLS 握手 EOF。实测：`git clone` 第 7 次成功、
 4. 闭环以 `GET /releases/latest` 的 asset `digest` 与本地 sha256 比对为准，
    别只看「命令返回 0」。
 
+**(c) 别用管道接 `git push` 再拿 `$?` 判成功**（本轮真抓到的一次假绿）。
+第一次推文档时写成 `git push | tail -3`，服务端其实回了
+`Please make sure you have the correct access rights and the repository exists.`
+（节点握手失败），但管道退出码是 `tail` 的 0，脚本照样打印「push ok」，
+而 `origin/main` 还停在 `1a19d96`。正确写法：
+`git push > /tmp/push.log 2>&1` 后直接判退出码，再用 SSH 的
+`git ls-remote origin refs/heads/main` 与本地 `git rev-parse HEAD` 比对 sha，
+不要只看输出里有没有「ok」字样。
+
 ---
 
 ## 7. 已知限制 / 未决项
