@@ -10,9 +10,10 @@
 App 内「关于 → 检查更新」自动升级；覆盖安装保留辅助功能授权，无需重新授权。
 每个 Release 页面都附有变更说明与安装包 sha256，可自行核对。
 
-当前最新版本 **1.4.3**（2026-11-07 发布，asset `Smoose-1.4.3.zip` 1,096,543 字节，
-sha256 `c2d6daec81b5a7507c4b573f02cfd15bc262a281dcc22615d372b3131c75b677`），
-`releases/latest` 已指向该版本。
+当前线上最新版本 **1.5.0**（2026-11-14 发布，asset `Smoose-1.5.0.zip` 1,192,543 字节，
+sha256 `0368ccbe5ddc4f1ac8ff8cafffc8e2fa66f38dbb346d5628bf52a7e37f49e20e`），
+`releases/latest` 已指向该版本。判断是否发版只认 `releases/latest` 的 tag 与 asset digest，
+别拿本地 `dist/` 比对 —— 本地 `release.sh` 重跑会产出字节不同的新包。
 
 ## 功能
 
@@ -22,10 +23,12 @@ sha256 `c2d6daec81b5a7507c4b573f02cfd15bc262a281dcc22615d372b3131c75b677`），
 | 距离倍率 | 0.2×–8×。≈4× 接近 Chrome/Safari 原生行滚动距离，≈1.5× 接近原生 AppKit 控件 |
 | 顺滑度 | 0–1，映射为指数插值时间常数 τ（0.006s ~ 0.27s） |
 | 最小步长 | 低于此值的微推会被放大，避免轻推无反应 |
+| 斜向锁定 | 0 = 关闭；较小轴不足较大轴指定比例时丢弃较小轴，抑制横向抖动 |
 | 双轴独立 | 垂直 / 水平各自独立开关平滑与方向反转 |
 | 忽略触控板 | 触控板与 Magic Mouse 的连续滚动默认原样透传 |
+| 设备级判定 | 用 `IOHIDManager` 旁路监听把每次滚动归属到具体设备，按 HID 集合（触控面 / 滚轮鼠标）决定是否接管，不再只靠事件相位猜测；须归属失败才回落到「忽略触控板」。指针页每台设备可单独改判（自动 / 触控板 / 滚轮鼠标），换鼠标不用动全局开关 |
 | 每格行数 | 只作用于离散滚轮鼠标，不影响触控板连续滚动 |
-| 每应用配置 | 按 bundle id 单独配置，或从「预设」一键套用（默认 / 干脆 / 丝滑 / 浏览器 / 原生 App / 聊天软件 / 跳过此 App）。套预设只改曲线参数，不会清掉你自己配的加速键；微信 / QQ / Slack / Discord / Teams 新建规则时自动套「聊天软件」档 |
+| 每应用配置 | 按 bundle id 单独配置；新增时可选择「自动识别」或手动模板，自动识别覆盖聊天 / 浏览器 / 编辑器与终端，未知 App 回落全局。每行仍可再「套用预设模板」或从全局复制 |
 | 修饰键透传 | 按住 ⌘⌥⌃⇧ 等修饰键时跳过接管、原样透传（精确操作场景） |
 | 滚轮加速 | 按住 ⌘⌥⌃⇧ 等指定修饰键时临时放大滚动倍率（1.2×–10×），松开立刻恢复，平滑尾巴自然收拢；对标 Mos Scroll Boost。与「按住透传」配同一个键时会橙色警告（同键时透传优先，加速不生效） |
 | 曲线预览 | 设置页与菜单栏实时绘制 0–500ms 归一化位移曲线及 95% 到位耗时，调参手感直观可见 |
@@ -36,9 +39,13 @@ sha256 `c2d6daec81b5a7507c4b573f02cfd15bc262a281dcc22615d372b3131c75b677`），
 | 光标放大 | 写入系统「摇动鼠标指针以定位」偏好并把生效条件说清楚：macOS 只在登录时加载该偏好，需重新登录或到系统设置里手动切换一次才生效；写后独立读回校验，失败回弹不假绿 |
 | 罗技硬件直控 | 纯 Swift 原生 HID++ 2.0 `0x2201`：先向设备查询 feature，再按**设备回报的真实范围**生成 DPI 档位（本机 100–25600、步进 50），写入后读回确认，失败明确报错；无需常驻 Logi Options+ |
 | 窗口自适应 | 设置窗口可拖拽调整大小，页面内容（字号 / 间距 / 控件）随之等比放大，2× 封顶；菜单栏弹窗宽随内容 |
+| 首屏状态 | 常规页顶部显示辅助功能 / 滚动接管 / 指针设备 / 当前 App 四项状态，异常项可一键跳转 |
+| 一键诊断 | 关于页可复制包含权限、event tap、设备、当前 App 和最近滚动来源的诊断报告，并可重新检测 |
+| 简易 / 高级 | 默认简易模式只保留常用参数；高级模式再显示曲线细节、轴向、透传和按住加速 |
 | 开机启动 | SMAppService 登录项 |
 | 权限自愈 | 授权被撤销自动停 tap，恢复后自动重建；菜单栏绿点 = 已授权，红点 = 未授权 |
 | 自动更新 | 版本源拉取 → SemVer 比较 → 增量进度下载 → **签名校验** → 替换重启，零第三方依赖。菜单栏面板实时显示下载进度 / 安装中 / 已就绪待重启，装完不丢重启入口 |
+| 悬停解释 | 设置页与菜单栏面板里「看标签猜不出」的开关 / 滑条 / 按钮，悬停约 1 秒弹出解释：这个数值改变什么、单位与系统默认值、容易误用的组合。滑条额外常驻一行小字（窗口变窄被压掉时悬停仍看得到） |
 
 ## 首次使用
 
@@ -104,22 +111,32 @@ Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./scripts/release.sh --github --repo cpufreestyle/Smoose`，
 否则 SwiftUI 宏展不开会误报 `self is immutable`，且 `build/` 已被清空（详见 HANDOFF §6.1d）。
 
-源码 15 个文件：`main.swift`（纯 AppKit 入口）、`App.swift`（AppDelegate / 状态栏 / 窗口自愈）、
-`Views.swift`（界面）、`Model.swift`（配置模型）、`ScrollAxis.swift`（插值引擎，纯逻辑）、
+实际发 GitHub Release 用幂等脚本（curl REST；历史上 `gh release create` 的 POST 全败）：
+`./scripts/publish.sh --dry-run` 先自检，确认后再 `./scripts/publish.sh`。它不重打包、不签名，
+只上传 `dist/` 里现成的 zip、校验线上 digest 与本地 sha 一致、再回填版本源 JSON。
+⚠️ 发布后不要再跑不带 `--github` 的 `release.sh`：它会重写已发布的 zip 并清空 manifest 的 url。
+
+源码 19 个编译单元（18 个 Swift + 1 个 C）：`main.swift`（纯 AppKit 入口）、
+`App.swift`（AppDelegate / 状态栏 / 窗口自愈）、`Views.swift`（界面）、`Model.swift`（配置模型）、
+`ScrollAxis.swift` / `ScrollPhases.swift`（插值与相位，纯逻辑）、
 `ScrollEngine.swift`（事件拦截 + 帧驱动 + 指针速度）、`PointerController.swift`（HID 指针加速度）、
-`Actions.swift`（按键动作）、`CursorZoom.swift`（光标放大）、`Updater.swift` + `UpdateModel.swift`（自动更新）、
-`LogitechHIDPP.swift`（罗技 HID++ 直控）、`TouchEvents.c/h`（原生轻扫手势投递）+ `IOHIDEvent*.h`（私有头）。
+`Actions.swift`（按键动作）、`CursorZoom.swift`（光标放大）、`SettingsLauncher.swift`（系统设置跳转）、
+`Updater.swift` + `UpdateModel.swift`（自动更新）、`HelpText.swift`（悬停解释）、
+`GamePerf.swift`（刷新率 / 设备列表）、`HIDPPProtocol.swift`（HID++ 0x2201 协议纯函数，平台无关）、
+`LogitechHIDPP.swift`（罗技 HID++ IOKit 传输与 DPI 同步）、
+`TouchEvents.c`（原生轻扫手势投递）+ `IOHIDEvent*.h`（私有头）。
 
 ### 一键验证（harness）
 
 ```bash
-./run_tests.sh                                        # 离线，PASS=59 FAIL=0
+./run_tests.sh                                        # 离线，PASS=104 FAIL=0
 SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agent 沙箱）
 ```
 
 | 段 | 验什么 |
 | --- | --- |
 | A | 插值与距离守恒 |
+| A2 | 斜向锁定阈值、双轴比例、负号与非有限值边界 |
 | B | 每应用命中 |
 | C | 按键动作枚举 |
 | D | 自动更新决策 |
@@ -136,8 +153,10 @@ SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agen
 | **N / N_W / N_MUT / N_MUT2 / N_MUT3** | **硬件 DPI 快捷键自动同步（23 项）**：非独占只读长连接、失败不吞 / 写入竞态、状态文案明确「未回写硬件」、无 App 前台门禁；三趟变异验证 |
 | **O / O_W / O_MUT / O_MUT2 / O_MUT3** | **系统设置跳转（14 项）**：新 PrivacySecurity 扩展 ID、completionHandler 接住失败、失败反馈含原因 / 重试 / 手动路径；三趟变异验证 |
 | **P / P_W / P_MUT / P_MUT2 / P_MUT3 / P_MUT4** | **光标放大（31 项）**：反相映射、写后独立读回、失败回弹、「待重新登录」文案、冷启动两步直达 Display 页；四趟变异验证 |
+| **V / V_W / V_MUT / V_MUT2 / V_MUT3** | **设备级滚动类型识别（15 项）**：设备键形态 / 能力分类与合并 / 三层判定与退化不变式 / 旧配置解码 / 判定参与签名 / 接线守卫；三趟变异验证 |
+| **S40** | **设备插拔与设备表刷新**：`IOHIDManager` 必须挂到在跑的 run loop（否则插拔回调永不派发）、设备表 `@Published`、行视图订阅 |
 
-（上表是主要阶段；完整执行顺序以 `run_tests.sh` 输出的 `== X:` 为准，当前 `PASS=59 FAIL=0`。）
+（上表是主要阶段；完整执行顺序以 `run_tests.sh` 输出的 `== X:` 为准，当前 `PASS=104 FAIL=0`。）
 
 改引擎 / 持久化 / 自动更新 / **指针加速度**代码后必须跑一遍，全部 PASS 才算完成。
 契约与断言清单见 [SPEC.md](SPEC.md)；关键坑与真机验证记录见 [HANDOFF.md](HANDOFF.md)。

@@ -46,6 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ScrollEngine.shared.brake()
         }
         PointerController.shared.start()
+        // 设备归属（v1.5.0）：非独占监听鼠标 / 触控面 HID 集合，只记录设备活跃时间。
+        // 输入监控权限缺失时内部自行降级，滚动判定回落事件启发式。
+        DeviceAttribution.shared.start()
         // 游戏性能面板：设备参数从 PointerController 已枚举到的设备拿，
         // 不自己再开一套 IOHID 枚举（两套枚举会互相抢设备）。
         GamePerfProbe.shared.deviceSource = {
@@ -53,7 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 PointerDeviceRef(registryID: $0.registryID,
                                  name: $0.name,
                                  transport: $0.transport,
-                                 builtIn: $0.builtIn)
+                             builtIn: $0.builtIn,
+                             locationID: $0.locationID,
+                             productID: $0.productID)
             }
         }
         GamePerfProbe.shared.start()
@@ -65,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ) { note in
             if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
                 ScrollEngine.shared.setActiveApp(app.bundleIdentifier)
-                ActiveAppInfo.shared.bundleID = app.bundleIdentifier
-                ActiveAppInfo.shared.name = app.localizedName
+                ActiveAppInfo.shared.update(bundleID: app.bundleIdentifier,
+                                            name: app.localizedName)
             }
         }
         observeWake()
@@ -169,8 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func refreshActiveApp() {
         let app = NSWorkspace.shared.frontmostApplication
         ScrollEngine.shared.setActiveApp(app?.bundleIdentifier)
-        ActiveAppInfo.shared.bundleID = app?.bundleIdentifier
-        ActiveAppInfo.shared.name = app?.localizedName
+        ActiveAppInfo.shared.update(bundleID: app?.bundleIdentifier,
+                                    name: app?.localizedName)
     }
 
     /// 睡眠唤醒后 HID 参数会被系统重置，需要重新套用

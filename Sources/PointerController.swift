@@ -41,7 +41,9 @@ enum PointerAccelPolicy {
         let supported = before != nil || after != nil
         if !supported { return (false, nil, true) }
         let ok = after == expected
-        // 成功存期望值；失败存实际回读值，让下一轮签名继续不同从而重试。
+        // 成功存期望值；失败存实际回读值（供状态区如实显示）。
+        // 别再指望「失败值和下一轮读数不同」来触发重试 —— 两者相同，签名会相等并短路。
+        // 真正的重试由 PointerAccelRetryPolicy.storedSignature 保证。
         return (true, ok ? expected : after, ok)
     }
 
@@ -83,6 +85,43 @@ enum PointerAccelStatus {
     /// 空结果必须判红：只有触控板、或外接设备读不到参数时，不能报「已接管」。
     static func allOK(_ writeResults: [Bool]) -> Bool {
         !writeResults.isEmpty && writeResults.allSatisfy { $0 }
+    }
+}
+
+/// 写入失败后的重试策略（2026-11-09 真机复现「启动粘滞」）。
+///
+/// 现象：App 跑约一天后 `HIDMouseAcceleration` 停在 0（起步发黏），状态区常驻
+/// 「⚠️ 写入未生效」，点「重新检测」无效，重启 App 立刻恢复 -65536。
+/// 旧实现有个反直觉的假绿：失败轮把 settled 存成「实际读回值」，下一轮 readings
+/// 读到的仍是同一个值 —— 签名相等 → `apply(force:false)` 直接短路，8 秒轮询
+/// 永远不再重写。K18 只验 `settled == 0`、注释写着「以重试」，却没验重试真会发生。
+/// 契约：只有全成功才缓存签名；失败轮留空，保证下一轮必定重写。
+/// 连续失败还要重建 `IOHIDEventSystemClient`：句柄失效时反复重写也不会自愈。
+enum PointerAccelRetryPolicy {
+    static let rebuildThreshold = 2
+    static let rebuildCooldown: Double = 30
+
+    /// 失败轮绝不缓存签名（空串 != 任何真实读数签名）。
+    static func storedSignature(successSignature: String, allOK: Bool) -> String {
+        allOK ? successSignature : ""
+    }
+
+    /// 只有「真的写过外接设备且失败」才累计；空结果（只有触控板）不算失败。
+    static func nextFailureCount(previous: Int, wroteDevices: Int, allOK: Bool) -> Int {
+        guard wroteDevices > 0, !allOK else { return 0 }
+        return previous + 1
+    }
+
+    /// 冷却避免「失败 → 重建 → 又失败」的无限循环。
+    static func shouldRebuild(count: Int, elapsed: Double) -> Bool {
+        count >= rebuildThreshold && elapsed >= rebuildCooldown
+    }
+
+    /// 失败后别等下一个 8 秒轮询：启动 / 唤醒时的一次瞬时失败也应尽快补回。
+    /// 上限避免设备永久写不进去时形成每秒一次的自循环（之后退回 8 秒轮询）。
+    static let quickRetryLimit = 5
+    static func shouldQuickRetry(count: Int) -> Bool {
+        count > 0 && count <= quickRetryLimit
     }
 }
 
@@ -137,6 +176,9 @@ final class PointerController: ObservableObject {
         let transport: String
         let builtIn: Bool
         let accelKey: String
+        /// USB 位置标识 / 产品 ID：用于区分同名设备（见 `DeviceLabel`）。
+        let locationID: UInt32
+        let productID: UInt32
         var id: UInt64 { registryID }
     }
 
@@ -147,7 +189,12 @@ final class PointerController: ObservableObject {
     @Published private(set) var appliedDescription: String = "尚未初始化"
     @Published private(set) var lastWriteOk: Bool = true
 
-    private let hidClient = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+    /// 必须是 var：真机实测长时间运行后旧 client 的 `IOHIDServiceClientSetProperty`
+    /// 会静默失效（写回显成功、读回恒 0），只有重建 event system client 才恢复。
+    private var hidClient = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+    private var lastRebuild = Date.distantPast
+    /// 连续写入失败轮数，达到阈值触发重建 + 全量重枚举。
+    private var consecutiveFailures = 0
     /// 兜底轮询：8 秒一次，只读缓存设备的当前加速度，对漂移的设备重写。
     /// 2026-11-06：原实现是 60 秒 + 「配置值 + rid 列表」签名短路，系统把 HID 参数
     /// 重置回默认时两者都不变，于是永远不会纠正。轮询本身不再全量枚举 IOKit
@@ -157,6 +204,7 @@ final class PointerController: ObservableObject {
     private var matchCallback: IOHIDDeviceCallback?
     private var removalCallback: IOHIDDeviceCallback?
     private var pendingRefresh: DispatchWorkItem?
+    private var pendingRetry: DispatchWorkItem?
 
     private static let accelTypeKey = "HIDPointerAccelerationType"
     private static let accelFallbackKey = "HIDMouseAcceleration"
@@ -185,6 +233,11 @@ final class PointerController: ObservableObject {
     // MARK: - 设备发现
 
     func refresh(force: Bool) {
+        // 全量重刷时重建 client：启动早期 HID 未就绪、长时间运行句柄失效、
+        // 设备重新枚举这三种情况都只有新建 client 才能真正写进去。
+        if force {
+            hidClient = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+        }
         guard let services = IOHIDEventSystemClientCopyServices(hidClient) as? [IOHIDServiceClient] else {
             return
         }
@@ -203,13 +256,19 @@ final class PointerController: ObservableObject {
             let builtIn = builtInFlag ?? (transport == "FIFO" || transport.localizedCaseInsensitiveContains("SPI"))
             let accelKey = (prop(service, Self.accelTypeKey) as? String) ?? Self.accelFallbackKey
             guard let rid = (IOHIDServiceClientGetRegistryID(service) as? NSNumber)?.uint64Value else { continue }
+            // 物理身份：两个罗技接收器的 Product 字符串完全相同（都是 "USB Receiver"），
+            // 只有 LocationID / ProductID 能区分（2026-11-10 真机实测）。
+            let locationID = (prop(service, "LocationID") as? NSNumber)?.uint32Value ?? 0
+            let productID = (prop(service, "ProductID") as? NSNumber)?.uint32Value ?? 0
 
             found.append(MouseDevice(client: service,
                                      registryID: rid,
                                      name: name,
                                      transport: transport,
                                      builtIn: builtIn,
-                                     accelKey: accelKey))
+                                     accelKey: accelKey,
+                                     locationID: locationID,
+                                     productID: productID))
 
             // 首次见到该设备 → 记录系统默认加速度（供显示与「恢复系统默认」）。
             // 不能拿设备当前读数当默认：App 可能已经接管过（上一轮写成 0 或 -1），
@@ -235,11 +294,24 @@ final class PointerController: ObservableObject {
 
     // MARK: - 应用
 
+    /// 同名设备消歧：两个罗技接收器的 `Product` 都是 "USB Receiver"，状态区会出现两行
+    /// 一模一样的文字，用户无法判断接管是否覆盖了全部鼠标（2026-11-10 真机实测：
+    /// PID 50504 / PID 50503 两个接收器插在不同 USB 口上）。
+    /// 只在列表里真的同名时才追加 PID / USB 位置；单设备时保持原样，不加噪音。
+    private func statusLabel(_ d: MouseDevice, among all: [MouseDevice]) -> String {
+        DeviceLabel.disambiguate(d.name,
+                                 productID: d.productID,
+                                 locationID: d.locationID,
+                                 ambiguous: DeviceLabel.hasSameNameSibling(name: d.name,
+                                                                          in: all.map(\.name)))
+    }
+
     func apply(force: Bool) {
         let prefs = Preferences.shared
         // 未开启「接管加速度」时不碰任何设备，把控制权完全交还系统
         guard prefs.pointerAccelManaged else {
             appliedSignature = ""
+            consecutiveFailures = 0
             DispatchQueue.main.async {
                 self.lastWriteOk = true
                 self.appliedDescription = "未接管加速度（系统默认）"
@@ -274,7 +346,7 @@ final class PointerController: ObservableObject {
         for (index, device) in eligible.enumerated() {
             let beforeLinear = readings[index].linear
             guard let base = baselines[device.registryID] else {
-                lines.append("\(device.name)：该设备不暴露加速度参数")
+                lines.append("\(statusLabel(device, among: eligible + skipped))：该设备不暴露加速度参数")
                 settledAccel.append((rid: device.registryID, current: nil))
                 settledLinear.append((rid: device.registryID, flag: nil))
                 continue
@@ -297,8 +369,10 @@ final class PointerController: ObservableObject {
                 && (backAccel.map { abs($0 - Double(plan.ioFixed)) < 1 } ?? false)
                 && outcome.ok
             writeResults.append(good)
-            // 成功时存「期望值」，失败时存「实际回读值」—— 后者让下一轮签名继续不同，
-            // 从而重试，而不是把一次失败固化成永久短路（旧实现的坑）。
+            // 成功存期望值、失败存实际读回值，供状态区如实显示。
+            // 旧实现误以为「存失败值能让下轮签名不同」—— 实际下轮读数就是同一个值，
+            // 签名相等直接短路，一次瞬时失败被永久固化（2026-11-09 真机复现）。
+            // 现在由 storedSignature 在失败轮清空签名来保证必定重试。
             settledAccel.append((rid: device.registryID,
                                  current: good ? Double(plan.ioFixed) : backAccel))
             settledLinear.append((rid: device.registryID, flag: outcome.settled))
@@ -308,22 +382,37 @@ final class PointerController: ObservableObject {
             let mode = PointerAccelPolicy.isLinear(value: want)
                 ? "线性 1:1（加速与灵敏度均禁用）"
                 : String(format: "加速度 %.3f", want)
-            lines.append("\(device.name)  \(mode)"
+            lines.append("\(statusLabel(device, among: eligible + skipped))  \(mode)"
                          + " · 线性标志 \(linearText)"
                          + " · 回读 \(String(format: "%.3f", (backAccel ?? -1) / 65536.0))"
                          + "  系统默认 \(String(format: "%.3f", base / 65536.0))"
-                         + (good ? "" : "  ⚠️ 写入未生效"))
+                         + (good ? "" : "  ⚠️ 写入未生效（正在自动重试）"))
         }
         // 跳过的触控板必须显式出现在状态行（不带警告），且不参与成功判定。
         for device in skipped {
-            lines.append(PointerAccelStatus.skippedLine(name: device.name))
+            lines.append(PointerAccelStatus.skippedLine(name: statusLabel(device, among: eligible + skipped)))
         }
         // 一台都没写成功不能报绿：只有触控板 / 外接设备读不到参数 = 实际没接管。
         let allOK = PointerAccelStatus.allOK(writeResults)
 
-        appliedSignature = PointerAccelSignature.make(PointerAccelSnapshot(
-            managed: true, value: want, includeBuiltIn: false,
-            readings: settledAccel, linear: settledLinear))
+        appliedSignature = PointerAccelRetryPolicy.storedSignature(
+            successSignature: PointerAccelSignature.make(PointerAccelSnapshot(
+                managed: true, value: want, includeBuiltIn: false,
+                readings: settledAccel, linear: settledLinear)),
+            allOK: allOK)
+
+        consecutiveFailures = PointerAccelRetryPolicy.nextFailureCount(
+            previous: consecutiveFailures, wroteDevices: writeResults.count, allOK: allOK)
+        let elapsed = Date().timeIntervalSince(lastRebuild)
+        if PointerAccelRetryPolicy.shouldRebuild(count: consecutiveFailures, elapsed: elapsed) {
+            lastRebuild = Date()
+            consecutiveFailures = 0
+            // 重建 client + 全量重枚举；冷却由纯函数保证不会形成无限循环。
+            scheduleForceRefresh()
+        }
+        if PointerAccelRetryPolicy.shouldQuickRetry(count: consecutiveFailures) {
+            scheduleQuickRetry()
+        }
 
         DispatchQueue.main.async {
             self.lastWriteOk = allOK
@@ -355,9 +444,28 @@ final class PointerController: ObservableObject {
         removalCallback = fire
         IOHIDManagerRegisterDeviceMatchingCallback(manager, fire, box)
         IOHIDManagerRegisterDeviceRemovalCallback(manager, fire, box)
+        // 2026-11-14 修：IOHIDManager 的回调只在**已挂到 run loop** 的 manager 上派发。
+        // 此前这里只 open + 注册回调，从未 schedule，于是 matching / removal 一次都不会触发：
+        // 插拔实际靠 8 秒轮询兜着，而那个轮询只在「已接管加速度」时才跑 ——
+        // 没开接管的用户插上鼠标后，指针页设备列表永远不刷新。
+        // 挂主 run loop 即可（回调只是把重刷丢回主线程，代价可忽略），不必再起一个线程。
+        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(),
+                                        CFRunLoopMode.defaultMode.rawValue)
     }
 
     /// 一个接收器常会连着冒出好几个 matching 回调，0.15s 合并成一次全量重刷。
+    /// 失败后 1 秒重试一次 apply（force:false）；合并避免重复堆积。
+    /// 签名在失败轮已清空，所以这次调用必定真的重写，不会被短路掉。
+    private func scheduleQuickRetry() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingRetry?.cancel()
+            let item = DispatchWorkItem { [weak self] in self?.apply(force: false) }
+            self.pendingRetry = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+        }
+    }
+
     private func scheduleForceRefresh() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

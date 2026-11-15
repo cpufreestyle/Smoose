@@ -6,6 +6,480 @@
 >
 > 本文档面向接手维护的开发者，记录架构、能力、关键坑、构建方式与未决项。
 >
+> **2026-11-15 反编译审计轮（用户「反编译 优化*项目*」→ 修复单帧距离丢失 + 加入斜向锁定；PASS=104 FAIL=0，未发版）**：
+> 本轮对 Smoose 自己的构建产物跑了 REA，不抽取闭源收费应用的源码，也不把第三方二进制实现搬进项目；
+> 反编译只用于确认自有二进制里的类型/符号与调用边界，行为优化仍以公开算法和独立实现为准。
+> REA 报告：`/tmp/smoose-rea/re-Smoose.md`（临时取证文件，不作为仓库依赖）。
+> **根因**：`ScrollAxis.advance` 单帧输出上限是 512px。旧实现先执行 `sent += whole`，再把返回值截到
+> ±512；当一帧应投递超过 512px（高倍率/大滚动量）时，超出部分已经记入 `sent`，后续帧永远不会补发。
+> 离线复现「巨大单格 2000px」：预期 4800px，修复前实际 2112px，偏差 2688px。
+> **修复**：先在 `Sources/ScrollAxis.swift` 把本帧输出夹紧到 ±512，再只把实际输出记入 `sent`；
+> 余量留在 `current - sent`，下一帧继续投递。普通 1/20/60 格场景的总距离不变。
+> **追加优化**：新增纯逻辑 `ScrollAxisLock`（`Sources/ScrollAxis.swift`）：当较小轴不足较大轴的
+> `axisLockThreshold` 时丢弃较小轴，抑制触控板 / 高分辨率滚轮带出的横向抖动；默认 **0 = 完全关闭**，
+> 真正的斜向滚动不受影响。全局「轴向与方向」和每应用「细节参数」都提供「斜向锁定」滑条，
+> 旧配置缺键时解码为 0。该设计只借鉴公开的交互语义，不复制第三方源码。
+> **回归**：`Tests/InterpTest.swift` 新增 2000px 单格场景；全量
+> `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **PASS=104 FAIL=0**（退出码 0，
+> 新增 A2 阈值 / 双轴 / 负号 / 边界断言）。
+> 构建 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh` RC=0，Mach-O sha256
+> `7e5ecc32bc6b0bc119da79af0d614303fed7fef8177e7531d6a32ce1617f1e39`，`codesign --verify --deep --strict`
+> 通过、`TeamIdentifier=6U2DQJ6Z2N`。已 ditto 到 `/Applications/Smoose.app` 并重启（pid 70747，
+> 1.5.0 / build 14）；旧包备份在 `docs/backups/Smoose.app.prev-1.5.0-20261115_222651.app`。
+> **未发版；本轮源码与文档提交到本地同步副本 `/tmp/smoose_sync_38`（hash 见 git log）。远端 fetch 当前被 1082 代理阻断，未推送。**
+> 线上仍是 v1.5.0。下一轮若要继续对照收费应用，只做公开行为/接口差异，不复刻内部源码。
+>
+> **2026-11-15 易用性 P0（用户「继续」→ 首屏状态条 + 一键诊断 + 简易/高级模式；PASS=104 FAIL=0，未发版）**：
+> ① 常规页顶部新增四格状态条：辅助功能 / 滚动接管 / 指针设备 / 当前 App；异常项点一下直接跳到对应标签页，
+> 不再让用户在六页设置里找原因。② 关于页新增「复制诊断报告」与「重新检测」：诊断文本由纯函数
+> `HealthStatus.report` 生成，包含权限、事件 tap、当前 App 专属规则、指针设备数、最近滚动来源与回环计数；
+> 重新检测会重新校验权限、补建 tap、刷新 PointerController 与 HID++。③ 常规页新增「简易 / 高级」分段：
+> 简易模式只保留总开关、输出方式、常用曲线、预设和开机；高级模式才显示曲线细节、轴向、透传和按住加速。
+> ④ 「按应用」新增预设立场：顶部可选「自动识别」或手动模板；自动识别覆盖聊天、浏览器、终端 / 编辑器保守白名单，
+> 手动选择优先；新增后每行还有「套用预设模板」菜单，未知 App 仍沿用全局。
+> UI 真机截图确认状态条与模式切换没有挤坏六页标签；全量 harness 仍为 **PASS=104 FAIL=0**，构建
+> `7e5ecc32bc6b0bc119da79af0d614303fed7fef8177e7531d6a32ce1617f1e39`，部署 pid 70747。
+> **未发版；本轮源码与文档提交到本地同步副本 `/tmp/smoose_sync_38`（hash 见 git log），远端 fetch 被 1082 代理阻断，未推送。**
+>
+> **2026-11-14 状态（已发版 v1.5.0）**：下面这段「11-14 状态核对 + v1.5.0 设计方向」是
+> 当天早间的快照，**已被当天下午的两次发布动作覆盖**，读现状请看下面「第四十轮」。
+> 一句话现状：线上 `/releases/latest` = **v1.5.0**（asset `Smoose-1.5.0.zip` / 1,192,543 字节 /
+> `sha256:0368ccbe…`），`/Applications/Smoose.app` 也是同一个包（1.5.0 / build 14）。
+>
+> **2026-11-14 第四十轮（用户「执行吧」→ 发布 v1.5.0；已发版）**：
+> 当天 GitHub 恢复可达（此前 DNS 被 fake-ip 劫持，`github.com` / `api.github.com` 均超时），
+> `gh` 仍是 `cpufreestyle` 已登录，于是把三件事一次做完：
+> ① `Resources/Info.plist` 版本 1.4.6/13 → **1.5.0/14**；
+> ② `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./scripts/release.sh`（不带 `--github`）打
+> `dist/Smoose-1.5.0.zip`（1,192,543 字节 / `sha256:0368ccbe…`）并验顶层 `Smoose.app` + TeamID；
+> ③ `scripts/publish.sh`（先 `--dry-run` 自检）走 curl REST 上传，末尾以 `GET /releases/latest`
+> 闭环核对 tag / asset / digest / size 四项全部一致，并回填 `dist/Smoose-1.5.0.json` 的 url。
+> Release notes 没有用 `--generate-notes`（本仓库无提交历史、生成不出内容），改用
+> `gh release create --notes-file` 手写变更说明，再由 `publish.sh` 复用同一个 Release 传 asset。
+> 发布后把同一个包 ditto 到 `/Applications` 并重启（pid 56612，`1.5.0` / build 14，签名校验通过）；
+> 旧包（1.4.6 本地构建）备份在 `docs/backups/Smoose.app.prev-1.4.6-build-14-<ts>.app`。
+> **踩坑记录**：`scripts/release.sh` 重跑会产出字节不同的 zip（编译时间戳），所以
+> **发版完成后再跑一次 release.sh 就会让 dist 与线上不一致** —— 判断发版状态永远只认线上 digest。
+> 仍未做（明确不做）：`release.sh --github` 分支（历史上 14 次 POST 全败，`publish.sh` 才是可用路径）；
+> 项目仍无 `.git`，源码不随 Release 分发。
+>
+> **历史快照（2026-11-14 早间）**：以下内容记录的是 v1.5.0 尚未实现时的状态，保留用于追溯。
+> 自 11-12 07:00 部署后，源码（`Sources/` `Probe/` `build.sh` `run_tests.sh` `scripts/`）**零改动**；
+> 现役 `/Applications/Smoose.app` 仍是当日部署版（版本 1.4.6 / build 13、二进制 sha `371d150b…`、
+> `TeamIdentifier=6U2DQJ6Z2N`，进程 pid 已随机器重启变化但二进制未变）。
+> 11-14 04:08 的 `build/Smoose.app` 被重跑、同期 `dist/Smoose-1.4.6.zip` 又被外部进程重打
+> （sha `6ea04b5c…`）——**核实这只是外部进程反复重打 dist，不代表有新发版**；线上
+> `/releases/latest` 至今仍是 `v1.4.6 / 0db37dcb…`，判断发版状态只认这个 digest，别比对本地 dist。
+> 11-12 之后项目树新增/变动的**非源码**文件：`docs/device-detection-design.md`（v1.5.0 设计方案，
+> 状态「待实现」）、`.gitignore`（新增忽略 `dist/`、`docs/backups/`、`logs/`、`/-`）。
+> **v1.5.0 规划已成型**：`docs/device-detection-design.md` 完整写了「设备级滚动类型识别 + 每设备覆盖」，
+> 针对 README 记录的「`ignoreTrackpad` 是全局唯一开关、关掉会误伤内置触控板」缺陷。核心是三层判定
+> （设备显式覆盖 → 按 HID usage 的能力分类 → 事件启发式兜底），旁路 `IOHIDManager` 影子监听 + 50ms
+> 时间窗把滚动事件归属到来源设备；关键不变式是「无设备信息时逐字退化为现状」，零回归。
+> 关联契约 `SPEC.md` §42，目标版本 v1.5.0，**已于同日实现完毕**（见下一段），设计文档 §11 的 6 步全部落地。
+> 接手者要动这块，先读 `SPEC.md` §42 的契约与不变式。
+> 回滚路径仍是 `docs/backups/Smoose.app.prev-1.4.6-20261112_070100.app`。
+>
+> **2026-11-14 第三十八轮（用户「按这个方案开始」→ 实现 v1.5.0 设备级滚动类型识别；PASS 96→102，未发版未部署）**：
+> 按 `docs/device-detection-design.md` §11 落地：
+> 新增 `Sources/DeviceAttribution.swift`（`DeviceKey` / `DeviceCapabilityClassifier` /
+> `DeviceScrollPolicy` 三个纯逻辑 + `DeviceAttribution` 影子监听）；`Model.swift` 加
+> `DeviceVerdict` 三档枚举与 `StoredState.deviceVerdicts`（`decodeIfPresent`，旧配置解码为空表），
+> 并纳入 `ScrollConfigSnapshot`（改判定必须重新 `apply`，否则覆盖静默不生效）；
+> `ScrollEngine.handleWheel` 把 `continuous && config.ignoreTrackpad` 换成三层判定
+> `DeviceScrollPolicy.shouldIgnore(...)`；`App.swift` 启动监听；指针页每台设备多一个「滚动判定」下拉。
+> **硬不变式**：归属失败（`device == nil`）+ `.auto` 时结论逐字等于 `continuous && ignoreTrackpad`，
+> 即 v1.4.6 行为；V7 用四组合断言钉死。归属靠 `IOHIDManager` 非独占监听 + 50ms 时间窗匹配
+> `CGEvent.timestamp`，全程只读，不 open / 不 seize 设备。
+> **已知行为变化（认定是修复而非回归）**：能力层把「Mouse 集合 + 连续事件」的设备
+> （Magic Mouse、部分高分辨率鼠标）判为滚轮鼠标，不再被 `ignoreTrackpad` 放行；误判时在设备行手改。
+> harness 新增 V 段 6 项（V1–V15 + V_W 接线守卫）与三趟负例（override / fallback / builtinkey），
+> Q 段补 Q30 与 `Q_MUT_verdict`。`run_tests.sh` **PASS=102 FAIL=0**，`build.sh` RC=0。
+> 顺带把 harness 里 10 处编译源码清单补上 `DeviceAttribution.swift`（漏了会整体编译失败）。
+> **已部署 `/Applications` 并重启（12:59）**：现役包 sha `f437f6bb…`、pid 44617、`codesign --verify --deep
+> --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`；旧包（11-12 版，sha `371d150b…`）已 `mv` 到
+> `docs/backups/Smoose.app.prev-1.4.6-20261114_125228.app`，要回滚就把它 ditto 回去。
+> **部署时踩到并修掉一个必崩点**：`Thread { [weak self, weak manager] in ... }` 里的 `manager` 是
+> `IOHIDManager`（CF 类型 / `__NSCFType`），CF 对象**不能进 weak 捕获列表**，启动瞬间直接
+> `Cannot form weak reference to instance of class __NSCFType` 崩掉（进程起来 1 秒内消失，无 .ips）。
+> 改成 `let mgr = manager; Thread { [weak self, mgr] in` 后正常。**以后再包 CF 类型都要先落一个
+> 局部常量**，别写 `weak`。
+> 另加了 3 行 `NSLog`（监听启动 / 登记台数 / 权限被拒）。**注意 `open` 启动时 NSLog 只落到
+> stderr（被丢掉）**，`/usr/bin/log show --predicate 'process == "Smoose"'` 里看不到它 ——
+> 验收要直接跑二进制：`/Applications/Smoose.app/Contents/MacOS/Smoose 2>&1 | head`，
+> 本机实测输出「设备归属监听已启动，登记 3 台设备」。（zsh 内置 `log`，查日志要用 `/usr/bin/log`。）
+> **未发版、未提交**，线上仍是 v1.4.6 / `0db37dcb…`。
+> 设备归属要真机验证：`IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)` 若为 denied，
+> 归属恒为 nil（滚动照常，功能静默失效），此时菜单栏「最近一次滚动来源」会显示启发式文案。
+>
+> **2026-11-14 第三十九轮（用户「执行吧」→ 修设备插拔与设备表刷新；PASS 102→103，已部署）**：
+> 部署 v1.5.0 后复查「插拔设备列表是否立刻更新」时发现两个真问题，写成 SPEC §43：
+> ① `PointerController.startDeviceWatch()` 只 `Open` + 注册回调，**从未 `ScheduleWithRunLoop`** ——
+> IOHIDManager 的回调不挂到在跑的 run loop 就一个都不派发，于是 §4.5 / D24 声称的「插拔事件驱动」
+> 从未生效；实际靠 8 秒兜底轮询，而那个轮询第一行就 `guard pointerAccelManaged`，
+> **没开「接管加速度」的用户插上新鼠标后设备列表永远不刷新**，除非重开设置。
+> ② `DeviceAttribution` 不是 `ObservableObject`，行视图读静态方法 → 「自动识别为」定格在窗口打开那一刻。
+> 修法：manager 挂主 run loop（回调本来就把重刷丢回主线程，不必另起线程）；
+> `DeviceAttribution` 改 `ObservableObject` + `@Published devices`（登记/移除时主线程发快照），
+> `PointerDeviceRow` 订阅它。新增 S40a/b/c 三条文本守卫。
+> **未验证**：物理插拔的端到端效果需要真机插拔一次；代码只保证「回调会被派发」的前提成立。
+> `run_tests.sh` **PASS=103 FAIL=0**，已重新 ditto 到 `/Applications` 并重启
+> （sha `ad8f6456…`，pid 24270，签名校验通过）。**未发版、未提交**。
+>
+> **2026-11-12 第三十七轮（用户「可以」→ 本地部署到 `/Applications` 并重启；未发版）**：
+> 把此前一直停在 11-10 19:03 的现役包换成 11-12 最新源码构建 —— 也就是说本机首次同时包含
+> v1.4.6 之后的全部修复（AX 自动重载重入/冷启动/首压/落盘/焦点、Updater digest 与版本-内容绑定、
+> HID++ 协议层、scrollSig 解耦）。流程：`run_tests.sh` 基线 PASS=96 FAIL=0 →
+> `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh` RC=0 → 退出旧进程（pid 32635，
+> TERM 后轮询 `/bin/kill -0` 确认真的退出）→ `mv` 现役包到
+> `docs/backups/Smoose.app.prev-1.4.6-20261112_070100.app`（**移动而非覆盖复制**，避免 ditto
+> 合并留下旧的混杂文件，旧包完整可回滚）→ `ditto --noqtn build/Smoose.app /Applications/Smoose.app`
+> → `open -g` 重启，新 pid 21501，2 秒后仍存活，无崩溃报告。
+> 校验不是「命令没报错」：`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、
+> 现役二进制 sha256 `371d150b…` 与 build 产物**逐字节一致**、`nm` 中 `ScrollConfigSnapshot` 37 处。
+> 辅助功能授权仍在：系统级 `/Library/Application Support/com.apple.TCC/TCC.db` 中
+> `kTCCServiceAccessibility|app.smoose.macos|2`（用户级 db 里没有，别只查用户级就误判授权丢失）；
+> 与 `build.sh` 用 Apple Development 证书做 DR 绑定的设计一致，重新编译不需要重新授权。
+> 最后打开 `smoose://settings?tab=pointer` 便于验收。
+> **未发版、未提交**（无 `.git`）：线上 `/releases/latest` 仍 `v1.4.6 / 0db37dcb…`，`dist` 没动；
+> `dist/Smoose-1.4.6.zip` 06:57 又被外部进程重打（1,163,369 字节 / `e713e767…`，今天第四次），
+> 再次印证判断发版状态只认线上 digest。要回滚就用上面那个备份目录覆盖回去。
+>
+> **2026-11-12 第三十六轮（用户「继续」→ 滚动配置签名解耦；PASS 90→96，未发版）**：
+> 承接 §39 留下的两条热路径待办。用户中途追问「为什么要解耦」，先讲清因果链：
+> `Views.swift` 写 `prefs.cursorZoomEnabled` → Combine `objectWillChange` 不携带字段名 →
+> `Model.persist()` 无条件 `ScrollEngine.shared.apply(s)` → 该方法在 `ScrollEngine.lock` 下
+> `phaseTracker.reset()` / `pointerRemX/Y = 0` / `suppressedButtons.removeAll()`，
+> 而 tap 线程的 `handlePointerMove` 用同一把锁。所以拨一个与滚动无关的开关，
+> 会在滚动手势进行中重置相位状态机、造成一次跳变或 `triggerOnMouseUp` 半边按钮卡住。
+> 本轮新增 `ScrollConfigSnapshot`（10 个 config 依赖字段）+ `ScrollReapplyPolicy.needsApply`，
+> `persist()` 只有快照变化才 `ScrollEngine.apply(s)`；其余字段只落盘。
+> **硬约束**：`pointerSig` 与 `.smoosePointerConfigChanged` 通知路径、S31a–e 文本守卫、
+> `UserDefaults.standard.set(data, forKey:)` 全部原样；`PointerController.apply(force:false)`
+> 仍无条件调用（它自带 `appliedSignature` 短路，且 S31 通知会驱动 `refresh`）。
+> 独立快照而非复用 `pointerSig` 是必须的：后者只含 3 个 HID 加速度字段，ScrollEngine 一个都不读，
+> 拿它 gate 会让主开关/倍率/绑定/触发时机整体静默失效。
+> harness 新增 Q 段：Q1–Q29 整编真 `Model.swift` + 计数桩，逐字段验证「相关字段必触发 / 无关字段不触发」，
+> 并用真 `persist()` 序列证明「拨光标开关 → 零次 ScrollEngine.apply」；Q_W 盯接线与落盘，
+> Q_MUT_field / gate / persist / Q_WMUT 四趟负例全部抓红。**首次 persist 仍会 apply 一次**
+> （`lastAppliedScrollConfig == nil`，启动时 config 必须有值），此时没有滚动手势，无害。
+> **GamePerf 按页门控评估后明确不做**：`Views.swift:796-800` 写明游戏页数据来自本来就在跑的
+> tap + CVDisplayLink（刻意设计，零额外开销）；`refreshDevices()` 挂在 1Hz `recompute` 上，
+> `recordPointer` 跑在 tap 独立线程。门控要给热路径加跨线程同步、补 onAppear 冷启动采样，
+> 还会让设备列表 stale，收益可能为负。CVDisplayLink 是插帧刚需，任何时候都别停。
+> 本轮 `build.sh` RC=0、`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`。
+> **未发版、未部署 `/Applications`、未提交**；线上仍是 v1.4.6 / `0db37dcb…`。
+>
+> **2026-11-12 第三十五轮（用户「1 2」→ 抽 HID++ 协议层 + 只读排查接收器；PASS 89→90，未发版）**：
+> 承接「不换 GPUI / 不跨平台 / 用户在 Win 也用罗技」三轮结论。本轮只做两件低风险的事：
+> ① **协议层抽离**：`Sources/HIDPPProtocol.swift`（124 行，只 `import Foundation`）收下原
+>   `LogitechHIDPP.swift` 第 5–119 行的 `HIDPPDPICommand / HIDPPDPIList / HIDPPDPIParser /
+>   HIDPPDPIWriteVerdict / HIDPPDPIWrite`；原文件 748→636 行，只剩 macOS IOKit 传输层与
+>   DPI 自动同步。`build.sh` 变 18 个编译单元。harness 22 处引用全部同步：10 处全量编译列表
+>   带上新文件、L 段改为直接编译协议层、`HSRC`/`NHSRC` 拼接两文件、`NCOMPILE` 与 `nmut` 副本
+>   带上新文件、**L_MUT / L_MUT2 改为直接变异新文件**。新增 `proto_purity_guard`（P1–P4：
+>   不许 import IOKit/AppKit/SwiftUI/CoreGraphics、不许出现 IOHIDDevice/CFRunLoop/NSWorkspace/
+>   DispatchQueue、必须仍有 Parser/Write 两个类型）+ L_MUT3（注入 `import IOKit` 必须抓红）+ LW14
+>   （build.sh 必须编译新文件）。**反向验证**：L_MUT/L_MUT2 改打新文件后仍分别被 L23、L16/L17
+>   抓红，证明抽出去的代码仍在被测路径上；L_MUT3 抓红证明纯度守卫不是假绿。最终 PASS=90 FAIL=0。
+> ② **只读排查接收器**：新增 `Probe/HIDPPReadOnlyProbe.swift`（只枚举、不 open、不 SetReport、
+>   不注册回调）。真机结果：7 个 0x046D HID 接口、**两个物理接收器 0xc547 / 0xc548 各带一个
+>   0xFF00 HID++ 控制接口**（与第三十三轮「两个 USB Receiver」一致）；源码记录 0xc547 支持
+>   0x2201（featureIndex=7），0xc548 明确不支持。竞争进程同驻：`lghub_agent`、`lghub_system_tray`、
+>   `logioptionsplus_agent`（含各自 updater 与登录项）、BetterTouchTool、Smoose。
+>   ⚠️ 准确性修正：**Windows 的「接收器独占」不能直接套到 macOS** —— IOKit 允许多个 client
+>   打开同一 HID 设备；风险是同一条 0xFF00 通道上多进程并发下发 HID++ 请求导致响应串扰，
+>   而不是「谁把谁踢掉」。`smoose.state` 里没有 HID++ 探测状态，无法从偏好断言当前是否被干扰。
+> **环境坑**：`ioreg` / `system_profiler` 在 agent 沙箱（连脱沙箱也一样）返回 0 行，必须用 Swift
+> `IOHIDManager` 探针才拿得到设备；第一次基线 E 段 `rm build: Operation not permitted` 是沙箱对
+> 残留 `build/` 的拦截，清掉目录后基线恢复 PASS=89 FAIL=0，与代码无关。
+> 本轮**未发版、未部署 `/Applications`、未提交**。`dist/Smoose-1.4.6.zip` 在 05:58 又被外部
+> 进程重打（manifest 的 url 再次被清空，sha 每次都不同，故不在此写死）；线上 v1.4.6 始终是
+> `0db37dcb…`。本地 `dist/` 会被反复覆盖，**判断发版状态只认 `GET /releases/latest` 的 digest**；
+> 线上 Release 与本机 `/Applications` 本轮我都没动。
+>
+> **2026-11-10 第三十四轮（用户说「你定」→ 自主选定并执行优化清单：自动重载链路 5 个真 bug + 更新器安全闭环 + 发布脚本入库；PASS 79→89，未发版）**：
+> 起点是上一轮两路只读审查合并后的清单（P0 五条 / P1 四条 / P2 别动）。本轮**只做能靠纯函数断言守住、不碰滚动与采样热路径**的部分：
+> ① `CursorZoom.swift` 五个真 bug：
+>   - **重入互斥**：新增值类型 `CursorZoomSyncQueue`（`submit` / `finish`），`scheduleAuto` / `runNow` 统一走 `enqueue` 串行；正在跑时又来的目标只记「最后一次」，跑完补一次 —— 不是跳过。防抖等待单独存 `debounceTask`，**绝不 cancel 已进 `perform` 的任务**（同步 AX 调用取消不了，只会留半截状态）。旧实现两个 `apply` 会并发抢焦点、AXPress 可能偶数次抵消。
+>   - **冷启动假失败**：`perform` 在 `open()` **之前**读系统设置进程是否已在跑；`CursorZoomSyncPolicy.pollDelaysMilliseconds` 给 16 次轮询分配间隔（冷启动 16×1600ms≈25.6s / 已在跑 16×250ms=4s）。旧实现固定 4 秒，而真机冷启动约 20 秒 → 必然 `targetNotFound`。`for _ in 0..<16 {` 与 `guard let t = target` 两处 PW34/PW35 精确串原样保留。
+>   - **首压失败仍按第二下**：`shouldPerformSecondPress` 要求 `press1Code == 0 && afterFirst != before` 才允许「离开再回来」的第二压。旧实现首压 -25204 也照按，会把开关留在非目标态、plist 反相却只回一句失败。
+>   - **落盘读回太早**：新增 `shouldKeepWaitingForStored`（最多 8×125ms），等系统设置异步写完再交给 `verdict`；等不到照旧判失败，四条硬门槛一个没放宽。
+>   - **焦点被硬拽回**：`shouldRestoreFocus` 仅当当前前台仍是 `com.apple.systempreferences` 才 `activate`；25 秒窗口里用户主动切走就不打扰。`restoreFocus(previousFront)` / `target.activate(options:)` / PW65–69 路径原样保留。
+> ② `UpdateModel.swift` / `Updater.swift` 安全闭环：
+>   - `Asset` 增加 `digest` 并解析 `assets[].digest` 的 `sha256:` 前缀，顶层显式 `sha256` 优先；只认 sha256，别的算法不拿来当 sha256 比。以前默认 GitHub 源下校验 100% 跳过。
+>   - 新增 `UpdatePackageVersionCheck.verdict`：解压后读包内 `CFBundleShortVersionString`，与 `manifest.version` 按 SemVer 归一化比对，不一致抛 `versionMismatch`、读不到抛 `bundleVersionMissing`。堵住「版本源声明 9.9.9 却指向合法签名的旧包」的静默降级 —— 旧包的 codesign / TeamID 全都过。`declaredVersion` 作为参数传进后台队列，不去读 @Published；签名链与 TeamID 底线一点没动。
+> ③ `scripts/publish.sh` 入库：把 v1.4.6 那次靠 `/tmp` 临时脚本成功的 curl REST 流程固化，参数化版本 / 仓库，POST 前先 GET、重试前再 GET、同名 asset digest 一致就跳过、末尾以 `GET /releases/latest` 的 tag / asset / digest / size 四项闭环，再回填 `dist/*.json`。`--dry-run` 只做本地前置自检（顶层 `Smoose.app` / 包内版本 / codesign）。**没有执行过发布**。
+> ④ `README.md` 三处过期数字：最新版本 1.4.3→1.4.6（补线上真实字节数与 sha）、源码 15→17 个编译单元、`PASS=59`→`PASS=89`（两处）；补一段发版流程与「发布后别再跑不带 `--github` 的 release.sh」。
+> ⑤ **harness**（`run_tests.sh` 新增 Z / Z_W / Z_W2 / Z_MUT / Z_WMUT 共 10 段）：Z1–Z40 编译真 `CursorZoom.swift` + `SettingsLauncher.swift` + `UpdateModel.swift` 断言纯策略；Z_W 14 项文本守卫防「纯函数全绿但没接线」；Z_MUT 6 趟 + Z_WMUT 1 趟负例变异，每趟先确认「文件确实被改 + MUTANT 标记存在」，再要求对应 FAIL 标签变红且进程非零退出。
+>   **反向验证真的抓到一次断言假绿**：初版 `Z_MUT_press2` rc=0 没抓红 —— Z18 那个负例里「首压报错」和「值没变」同时成立，短路掉 `press1Code == 0` 后仍被另一个条件挡住。补 `Z40`（首压报错但值已变）单独卡住这个原因，重跑才全红。这正是「断言要能表达具体原因」的实例。
+>   最终 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **PASS=89 FAIL=0**，退出码 0；7 个变异全部抓红。
+> ⑥ 编译验证：`SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh` RC=0，1.4.6/13，`codesign --verify --deep --strict` 通过，`TeamIdentifier=6U2DQJ6Z2N`。**坑**：`strings` 查方法名报 0 是假阴性（方法名不进 cstring 段），`nm -a` 才看得到 `assetDigestSHA256` / `shouldPerformSecondPress` / `pollDelaysMilliseconds`；别拿 `strings` 计数判断「逻辑有没有进二进制」。
+> ⑦ **本轮明确不做**（留给下一轮，都有真实回归面）：`Model.persist()` 的独立 scrollSig 解耦（拨光标开关会 `phaseTracker.reset()` 并抢 `ScrollEngine.lock`；不能复用 `pointerSig`，见 §32 与 11-09 记忆）、GamePerf 按页门控（会动 S35/S36 采样契约）、`findTarget` 主线程 AX 遍历、README/SPEC 章节编号重排。理由：都要改运行时热路径或大量交叉引用，和本轮「小改 + 可断言」的边界不符。
+> ⑧ **现场状态（重要）**：本轮期间 `dist/Smoose-1.4.6.zip` 于 23:22 被**外部进程**重打（1,154,585 字节 / sha `61cfbf94…`，manifest url 被清空），不是本轮操作；线上 Release 仍是 `v1.4.6` / `sha256:0db37dcb…`，未受影响，本轮也没有覆盖 dist。`/Applications/Smoose.app` 仍是 11-10 的本地构建。**未发版**：`Info.plist` 仍 1.4.6 / 13；项目无 `.git`，全部改动保持未提交；发版属于需用户单独确认的不可逆操作，本轮没有执行。
+>
+> **2026-11-10 第三十三轮（用户看到「游戏」页两行都叫 USB Receiver，问「有两个重复了吗」→ 不是重复，是两个物理接收器；UI 同名时追加 PID / USB 位置，本地已部署双向验收，未发版）**：
+> 用户原话「有两个重复了吗」+ 截图（游戏页三行：两个 USB Receiver 1000 Hz + 内建触控板 125 Hz）。
+> ① **结论：不是重复**。取证用 `ioreg -l -w0` 的树形结构：系统里有**两个物理罗技接收器**
+>    —— `USB Receiver@01120000`（PID 50504 / LocationID 17956864，4 个 USB 接口，`lghub_agent`
+>    在每个接口上都开着 user client）和 `USB Receiver@03100000`（PID 50503 / LocationID 51380224，
+>    3 个接口，同样有 `lghub_agent`）。用与 App 相同的 API（`IOHIDServiceClient`）读两个指针服务：
+>    PID 50504 那个的 `DeviceUsagePairs` 有 5 项（鼠标 / 键盘 / consumer / telephony…），
+>    PID 50503 那个只有 2 项（鼠标 + 指针）。所以是两台不同设备，各自一个鼠标集合。
+> ② **为什么不能去重**：合成一行会谎报设备数，更糟的是加速度写入会少写一台
+>    （`PointerController.apply` 是对 `devices` 逐台写的）。反过来，原样显示两行同名也不对 ——
+>    用户无法判断接管覆盖了哪几台。所以选「同名时追加物理标识」。
+> ③ **改动（4 个文件，全部只影响显示，未碰写入路径）**：
+>    `GamePerf.swift` 新增纯函数 `DeviceLabel.disambiguate/hasSameNameSibling`（PID 优先，
+>    退回 USB 位置，两者都没有就原名，不编假标识）；`PointerController.MouseDevice` 增补
+>    `locationID/productID`，`apply()` 的三条状态行走 `statusLabel()` 消歧；
+>    `App.swift` 的 `deviceSource` 透传这两个字段；`Views.swift` 游戏页行标题 + 指针页设备行
+>    用同一个纯函数，游戏页脚注补一句「多行同名不是重复」。
+> ④ **harness**：新增 H42（7 项）覆盖 `DeviceLabel` 的每条分支，包括「单设备不加后缀」
+>    「PID 优先」「退回 USB 位置」「两者都没有就原名」。第一次跑全量 **FAIL=2**，两个都是真问题：
+>    H 段编译失败（harness 里三处 `GameDeviceInfo(...)` 直构没带新字段）、
+>    MW4 接线守卫红（它断言 `skippedLine(name: device.name)` 这个字面量，而我把参数包成了
+>    `statusLabel(...)`）。两处都已按新意图修好 —— 守卫的语义（跳过行必须带设备名）没变。
+>    最终 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **PASS=79 FAIL=0**。
+> ⑤ **真机双向验收**：`ditto` 部署 + 重启，AX 树读回游戏页三行标题已变成
+>    `USB Receiver（PID 50504）` / `Apple Internal Keyboard / Trackpad（内置）` / `USB Receiver（PID 50503）`；
+>    指针页设备行与加速度状态行同样带 PID，且两台都显示「线性 1:1 · 回读 -1.000」。
+>    独立只读探针（`Probe/AccelReadProbe.swift`）同时确认两个指针服务都是 -65536。
+> ⑥ **未发版**：`Info.plist` 仍 1.4.6 / 13。回滚点
+>    `docs/backups/Smoose.app.prev-1.4.6-20261110_183900.app`（= 上一轮 1.4.6 + 第三十一轮悬停解释）。
+>
+> **2026-11-10 第三十二轮（用户问「鼠标怎么有段时间被控制」→ 结论是 macOS 自己的指针加速曲线，且线性接管写入当时已失效；新增只读取证探针 + SPEC §37，未发版）**：
+> 用户原话「鼠标怎么有段时间被控制」，与 2026-10-18/10-19 问过的「刚移动很慢后面正常」
+> 「停一段时间以后启动非常慢」是同一现象。本轮**没有改 App 代码**，只做了真机取证、恢复生效、
+> 固化探针与文档。
+> ① **结论：被控制的不是鼠标移动，是 macOS 的加速曲线**。该曲线速度相关、低速增益 < 1：
+>    刚起步 / 停久了再动时增益被压低，光标像被拽住，手速上来后增益升满就「正常了」。
+>    按用户当前配置（`pointerSpeedManaged=false`、`pointerSpeedFactor=1`）Smoose 对
+>    mouseMoved **一个字节都不改**（`handlePointerMove` 的 `needRewrite` 恒 false，原样放行），
+>    所以手感差异不可能来自事件 tap，只能来自 IOHID 层。当前存档实测：
+>    `pointerAccelManaged=true` / `pointerAccelerationValue=0`（线性）/ `cursorZoomEnabled=false` /
+>    每应用只有微信一条滚动规则 / 侧键绑定为空。
+> ② **取证（本轮核心，全部可复现）**：独立只读探针（见 ④）在 App 未运行时报
+>    G502 X 的两个指针服务 `HIDMouseAcceleration = 0`；`open -g` 启动 Smoose 后 **12 秒内**
+>    两个服务都变 `-65536`，状态区同步变绿「线性 1:1（加速与灵敏度均禁用）· 回读 -1.000」。
+>    `0 ≠ 关闭`：0 = 最小加速度，曲线仍在（只是最弱）；`-65536` 才是 LinearMouse 语义里的
+>    「加速与灵敏度均禁用」。所以用户那段时间的体感就是曲线重新接管了。
+> ③ **写入的持久性实测（推翻两个想当然）**：`osascript -e 'quit app "Smoose"'` 后值**不掉**
+>    （仍 -65536）；App 退出状态下鼠标静置约 4 分钟、5 次采样仍 -65536。
+>    `uptime` = 5 天 15 小时、`pmset -g log` 无 sleep/wake 事件 → 那个 0 与重启/睡眠无关。
+>    因此本轮开始时值是 0 的最合理解释：App 上次长时间运行期间写入漂移（2026-11-09 记录过
+>    同一现象「跑约一天后停在 0、重启 App 立刻恢复」），之后 App 被退出，再没人改写。
+>    **注意本轮开始时 App 根本没在运行**（登录项里有 Smoose、无崩溃报告）—— App 不在跑时
+>    线性接管和滚轮增强同时失效，用户很容易把两者都归因到「鼠标」。
+> ④ **新增 `Probe/AccelReadProbe.swift`（只读，绝不写设备）**：与会试写 0/163840/65536 的
+>    `Probe/main.swift` 区分开。列出事件系统里符合 GenericDesktop/Mouse 用法的服务及其加速度读数，
+>    按 -65536 / 0 / 163840 给出判定，退出码 0=全部线性、2=有服务没接管、3=没有外接指针服务。
+>    用法 `swiftc Probe/AccelReadProbe.swift -o /tmp/accelread -framework IOKit && /tmp/accelread`。
+>    为什么需要独立进程读数：App 状态区读的是自己写后的回读，「写进去之后又被系统改回去」
+>    只有独立进程能发现（本轮就是这么抓到 0 的）。
+> ⑤ **写入落在哪些节点（本轮实测，此前只有推测）**：G502 X 的 USB Receiver 同时暴露
+>    鼠标 / 键盘 / 消费类控制共 5 个 HID 集合，`IOHIDServiceClientConformsTo(GD_Mouse)`
+>    只认其中 2 个鼠标集合，写入也只落这 2 个；键盘与 consumer 集合上的同名键与指针手感无关。
+>    另：`HIDUseLinearScalingMouseAcceleration` 走 service client 读回是 nil（状态区显示
+>    「线性标志 不支持(回退 -1)」），而 ioreg 的 registry 视图显示 1 —— 两个视图不一致，
+>    以 service client 视图为准（App 就是这么读的），这也是状态区那句话的来源。
+> ⑥ **文档**：SPEC §37 记录契约、四条已验证断言与未验证项。
+> ⑦ **未决（不要当结论）**：0 的来源未能定位，需要复现「长时间运行后漂移」才能继续；
+>    漂移机制（怀疑旧 client 的回显读到的是写入值而非内核真值，使 8 秒轮询签名恒等永久短路）
+>    **只是推测，零证据**。下一步若要动代码，方向是给轮询加一条独立读回校验，
+>    但必须先能复现，否则就是盲改——等用户决定是否值得做长跑验证。
+> ⑧ **本机状态**：Smoose 已重新启动（pid 见 `pgrep -f MacOS/Smoose`），2/2 指针服务线性，
+>    设置窗口停在「指针」页（`open "smoose://settings?tab=1"`）。未发版：`Info.plist` 仍
+>    1.4.6 / 13，本轮未改 App 代码，本机二进制与线上 1.4.6 + 第三十一轮悬停解释一致。
+>
+> **2026-11-09 第三十一轮（「有必要的地方加入悬停显示解释」→ 补满 12 个键 + 修掉 harness 里一个真假绿；本地已部署双向验收，未发版）**：
+> 用户原话就一句「有必要的地方加入悬停显示解释」。上一轮（未记入本文档的中间态）已经铺了
+> `Sources/HelpText.swift` 文案表和 29 处挂载，本轮补齐剩余控件，并在补 harness 变异时
+> 挖出 T_W 段一个**从上线起就没生效过**的检查。
+> ① **新增 12 个键 + 11 处挂载**（挂载总数 29 → 40，键 35 → 47）：
+>    每应用细节参数里的 4 个轴向开关 + 模拟触控板 + 按住透传（`appRuleSmoothVertical` /
+>    `appRuleSmoothHorizontal` / `appRuleReverseVertical` / `appRuleReverseHorizontal` /
+>    `appRuleSimulateTrackpad` / `appRuleBypass`）、「添加应用」菜单（`addAppRule`）、
+>    关于页的请求权限 / 每天自动检查 / 重置全部设置（`requestPermission` / `autoCheckUpdates` /
+>    `resetAllSettings`）、指针页的重新检测 / 恢复系统默认（`pointerRefresh` / `pointerRestoreDefaults`）。
+>    没有为了凑数把「跟随全局」「取 1.0（原速）」这种一眼懂的也挂上 —— 悬停气泡太多会变噪音。
+> ② **挖出并修掉 T_W 的假绿**：`for C in $TCASES` 在本脚本（zsh）里**不做单词拆分**，
+>    `$TCASES` 是一整串带换行的参数，而 BSD `grep -F` 把 pattern 里的空行当「匹配任意行」，
+>    所以「每个键都必须在 Views.swift 里有调用点」这条**恒真**，从来没抓到过未接线的键。
+>    改成 `${=TCASES}` 后第一次跑就报出真实的 `boostModifiers` —— 它的 `help:` 实参跨行
+>    （`ModifierBypassRow(..., help: .boostModifiers` 换行再写 `)`），而我第一版边界正则
+>    只写 `[^A-Za-z0-9]`（行尾符不参与 grep 逐行匹配）又造成虚报；最终写成
+>    `([^A-Za-z0-9]|$)`，且 `$` 必须是双引号串末的裸 `$`。`${C}` 的显式花括号也不能省：
+>    `$C[^A-Za-z0-9]` 被 zsh 当成对 C 取下标，报 `bad math expression`。
+>    这三个坑都写进了 SPEC §36 和 run_tests.sh 的注释，不是只改代码。
+> ③ **T_W 抽成函数 `tw_guard()`**：为的是让新加的 T_MUT3 能把整条守卫喂给摘过挂载的副本。
+>    原来的 T_WMUT 只验证「变异体造得出来」，属于自证；T_MUT3 摘掉 `.smooseHelp(.addAppRule)`
+>    后真跑一遍守卫，必须报「未接线的键: addAppRule」—— 已 PASS。
+> ④ **新增真机探针 `Probe/AXHelpProbe.swift`**：`smooseHelp` 写没写、T_W 只做文本断言，
+>    都证明不了「运行中的 App 真把 toolTip 设到 NSView 上」—— SwiftUI 的 `.help()` 在某些
+>    容器里会被吞掉。探针用 `AXUIElementCopyAttributeValue(k, "AXHelp")` 从 WindowServer 读回。
+>    **实测 99 个控件带 tooltip**：tab0 常规 43 / tab1 指针 30 / tab2 每应用 11 /
+>    tab3 按键 6 / tab4 游戏 1 / tab5 关于 4；`--all` 顺带列出无 tooltip 的控件。
+> ⑤ **本机部署**：`codesign --verify` 通过（TeamIdentifier=6U2DQJ6Z2N，与现役同证书），
+>    ditto 到 `/Applications/Smoose.app`，`open -g` 重启；12 条新文案在出厂二进制里逐条命中。
+>    回滚点 `docs/backups/Smoose.app.prev-1.4.6-20261109_210958.app`（= 线上 1.4.6，无悬停解释）。
+>    授权记录在系统级 TCC.db，同证书重签不掉，重启后 `defaults read` 正常。
+> ⑥ **验证**：全量 `PASS=79 FAIL=0`（上轮 78 + T_MUT3）。E 段整包编译过 Views.swift +
+>    HelpText.swift，所以键名打错 / 挂载点语法错会直接让 E 段红。
+> ⑦ **如实记录的未覆盖边界**：每应用「细节参数」折叠组里那 6 个轴向开关，真机 AX 树上读不到
+>    —— 折叠内容连 AX 树都没有，且 `focusAppID` 只能从菜单栏面板设置，脚本展不开。
+>    这 6 处的证据只有三条：文案在二进制里逐条命中 + T_W 3 要求每个键都有调用点 +
+>    同一个 `List` 容器里的「接管」复选框和两个滑条已实测带 tooltip。
+>    菜单栏面板是 `NSPopover`，不出现在 `kAXWindowsAttribute`，探针同样读不到。
+>    要补真机读数，需要手工点开折叠组后重跑 `/tmp/axhelp --expand`。
+> ⑧ **未发版**：`Info.plist` 仍是 1.4.6 / 13，本机 = 线上 1.4.6 + 本轮悬停解释。
+>    等用户明确说「推送」再抬版本发 Release。
+> ⑨ **顺带修正的文档错误**：`smoose://settings?tab=N` 的真实 tab 顺序是
+>    0 常规 1 指针 2 每应用 3 按键 4 游戏 5 关于，代码注释里原写的是「1 每应用 2 按键」，
+>    已按实测改正（SPEC §36、探针注释）。
+>
+> **2026-11-09 第三十轮（用户「推送」→ 发 v1.4.6，第二十六～二十九轮全部上线）**：
+> ① 版本抬到 `1.4.6` / `CFBundleVersion 13`；`SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh`
+>    → **PASS=73 FAIL=0**（含 MUT11–MUT14 / P_WMUT 反 drift）。
+> ② `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./scripts/release.sh`（**不带 `--github`**，只本地出包，
+>    避开 `gh` 在轮换代理节点上 POST 不稳）→ `dist/Smoose-1.4.6.zip` 1130497 字节、
+>    sha256 `0db37dcb…defa15`、签名 `Apple Development: qm0819@hotmail.com (5F66DDWD6H)` /
+>    `TeamIdentifier=6U2DQJ6Z2N`（与现役包同一张证书，TCC 的 DR 不变）。
+> ③ 发布走 `curl` REST 幂等脚本（`/tmp/smoose_publish_146.sh`）：每次 POST 前先 GET
+>    `/releases/tags/v1.4.6` 与 `/releases/:id/assets` 确认（超时 ≠ 失败），asset 传
+>    `uploads.github.com`，**失败重试绝不重建 zip**（LC_UUID 会让 sha 变）。
+>    本轮一次即成：Release id `439040662` / POST 201、asset POST 201；
+>    `GET /releases/latest` = `v1.4.6`，asset `digest=sha256:0db37dcb…defa15` 与本地一致。
+>    `dist/Smoose-1.4.6.json` 的 `url` 由发布脚本补填（不带 `--github` 时 release.sh 留空）。
+> ④ 增量确认：解出线上 `v1.4.5` asset（1104409 字节，sha `a820f4d4…ea0c6`）的 Mach-O 做字节比对，
+>    `AX_FIND_CURSOR` / `CursorZoomSessionSync` / `CursorZoomAutoSyncPolicy` /
+>    `PointerAccelRetryPolicy` / `CursorZoomSyncLedger` 在线上 1.4.5 **全为 0**，新包各 ≥1 ——
+>    证实 26–29 轮此前确实没发过，不是重发同一包；`SettingsLayout` 两边同为 26，布局修复已在 1.4.5。
+> ⑤ 端到端：下载线上 asset sha256 与产出端逐字节一致 → 顶层 `Smoose.app`、版本 1.4.6/13、
+>    `codesign --verify --deep --strict` 通过、TeamIdentifier 与 `expectedTeamIdentifier` 对齐 →
+>    真源码 `UpdateCheck.decide` 对线上 `releases/latest`：`1.4.3/1.4.4/1.4.5 → available(1.4.6)`
+>    且 url 指向该 asset，`1.4.6/1.5.0 → upToDate`（`UPDATECHECK-OK`）。
+> ⑥ 本机部署：备份 `/tmp/Smoose.app.prev-1.4.5-20261109_192052.app` → 退出旧进程 →
+>    用**下载的线上包** ditto 到 `/Applications/Smoose.app` → `open -g` 重启（pid 98141）。
+>    系统级 `/Library/.../TCC.db` 里 `kTCCServiceAccessibility | app.smoose.macos | auth_value=2` 保留
+>    （⚠️ 授权记录在系统级库，用户级 `~/Library/.../TCC.db` 查不到，别拿空结果当「授权丢了」）。
+> ⑦ 前面四轮里所有「未发版」标注都是当时状态，现已随 v1.4.6 发布；
+>    **代码与文档改动仍保持未提交**（本目录无 `.git`，未推任何源码仓库）。
+>    残留限制不变：自动重载会短暂打开系统设置，画面效果只能由用户摇鼠标确认。
+>
+> **2026-11-09 第二十九轮（「为什么必须点立即生效」→ 开关变化自动重载 + 修掉重启后的假提示；本地已部署双向验收，未发版）**：
+> 用户问「为什么必须点立即生效」，回答是两条通道不同：`CGDisableCursorLocationMagnification` 由 WindowServer
+> 只在登录会话启动时读，第三方写 plist 不热重载；只有系统设置自己拨 `AX_FIND_CURSOR` 才触发会话重载。
+> 用户回「你定」，于是选「开关变化自动跑 + 修状态显示」并落地：
+> ① `CursorZoom.swift` 新增 `CursorZoomAutoSyncPolicy`（防抖 600ms、`shouldTrigger(writeOK:)` 只在写盘成功时触发、
+>    `LedgerDisplay` 三态 / `ledgerMessage` 文案 / `shouldRecord` 失败绝不记账）与 `CursorZoomSyncLedger`
+>   （UserDefaults 写、CFPreferences 独立读回校验）；`CursorZoomSessionSync` 改 `ObservableObject`，
+>   统一由单例调度 `scheduleAuto` / `runNow`，自动与手动**共用同一个 `apply` 和四条硬门槛**，
+>   成功后写 ledger，失败不写。
+> ② `Views.swift`：`@ObservedObject zoomSync`、`applyCursorZoom` 写盘成功后 `scheduleAuto`、手动按钮走 `runNow`
+>   （取消 pending 避免拨两遍）、状态区改用 `ledgerMessage`、`onChange(of: lastResult)` 刷新系统值；
+>   旧文案「本次会话：尚未重载」彻底删除（那是 App 丢了记录，不是系统状态回退）。
+> ③ **焦点恢复**：`apply` 必须在 `perform` **之前**取 `NSWorkspace.frontmostApplication`，完成后用
+>   `NSRunningApplication.activate(options: [.activateAllWindows])` 恢复。真机实测 `NSApp.activate(ignoringOtherApps:)`
+>   在 macOS 27 不可靠（前台会掉到 Finder），已删除该路径，PW69 守着不许回来。
+> ④ 验证：全量 **PASS=73 FAIL=0**（上轮 68 + MUT11–MUT14 + P_WMUT）；新增 S40–S61、PW47–PW69。
+>   变异抓红：写盘失败也自动跑→S41；失败也写 ledger→S45–S50；忽略记录方向无脑 upToDate→S53/S54；
+>   重启后代用户宣称「已生效」→S57；预先写 `lastResult = .applied` / 跳过独立读回→PW50/PW55。
+> ⑤ 真机：**只拨开关、不点按钮** → `plist 1→0`、`AX_FIND_CURSOR '1'`、ledger 落盘、
+>   文案「按「开启」重新加载 ✓ 请摇动鼠标确认光标会变大」；反向 `0→1` / `'0'` / 「不再放大」；
+>   前台 BEFORE/AFTER 均为 Smoose；重启 App 后显示「上次在 18:59 已让系统按「关闭」重新加载」、
+>   无「尚未重载」、HID `-65536` 无红字。最终状态留在关闭、系统已重载。
+> ⑥ **耗时实测**：系统设置进程冷启动首轮约 20 秒（那个进程长驻后响应慢），之后每次 **2.4 秒**。
+>   stale 文案如实写「首次冷启动可能要十几秒」，不写「短暂」这种乐观措辞。
+> ⑦ **验收坑**：App 还在运行时直接读 `~/Library/Preferences/app.smoose.macos.plist` 可能看到**未 flush 的旧 ledger**
+>   （`UserDefaults.synchronize()` 在新系统是 no-op），与 cfprefsd 视图短暂不一致；重启 App 后磁盘与 UI 一致。
+>   判断 ledger 是否正确，以重启后的 UI / 磁盘为准，别拿进程运行中的磁盘快照当结论。
+> ⑧ **未发版**：`Info.plist` 仍是 1.4.5 / 12，本机 = 线上 1.4.5 + 第二十七～二十九轮修复。
+>   等用户明确说「推送」再抬版本发 Release。代价要如实说明：自动重载会短暂打开系统设置，
+>   画面效果仍只能由用户摇鼠标确认，程序不代其宣称。
+>
+> **2026-11-09 第二十八轮（「打开摇动放大却没生效」= 会话同步单向写死「关」+ 系统值覆盖用户选择；本地已部署双向验收，未发版）**：
+> 用户先说「继续」（要收尾冷启动窗口测量），随即反馈「现在我打开移动，加大鼠标头的功能，它没法生效」，
+> 于是先把新故障处理完，再补完冷启动测量。
+> ① **真机证据链**：`defaults read app.smoose.macos` 解出 `smoose.state.cursorZoomEnabled=False`，
+>    但设置页仍显示 `已写入系统偏好 ✓` —— 用户点过「开」，开关却已被改回「关」；
+>    `CGDisableCursorLocationMagnification = 1`（禁用）。再用同签名 AX 探针点「立即生效」：
+>    `PLIST` 保持 `1`、文案是「请摇动鼠标确认**光标不再放大**」—— 按钮干的事就是把系统拨回关，
+>    与用户想要的开启完全相反。
+> ② **根因两层**（都在上一轮第二十六轮引入的「不注销即时生效」里）：
+>    - `CursorZoomSyncPolicy.verdict` 把终态硬编码成 `AXValue="0"` / `stored="1"`，
+>      `press2Needed = (before == "0")`、`CursorZoomSessionSync.apply()` 不带目标参数 →
+>      **整条链路只会关闭**。用户开启后点按钮，系统反被拨回关还报绿（假绿中的方向错）。
+>    - `Views.syncZoomFromSystem()` 每次 `.onAppear` 用系统值回写 `prefs.cursorZoomEnabled`，
+>      `App.syncCursorZoomFromSystem()` 启动时同样回写 → 用户刚选的「开」被覆盖。
+>      加上状态文案全是关闭视角（「偏好是关的、光标仍可能放大」「把这个开关关一次再打开」），
+>      开启方向没有任何正确指引。
+> ③ **修法（方向无关）**：`CursorZoomSyncResult.applied` 带 `enabled`；
+>    `CursorZoomSyncPolicy` 新增 `desiredAX / desiredStored / needsDoublePress`，
+>    `verdict(..., desiredEnabled:)` 的终态与落盘校验都按目标方向；
+>    `SessionSync.apply(desiredEnabled:)` 由指针页传 `prefs.cursorZoomEnabled`；
+>    已是目标态拨两次「离开再回来」强制系统重写，不是目标态拨一次即到位；
+>    成功文案按方向写「光标会变大 / 不再放大」，且始终要求用户实测画面。
+>    `.onAppear` 改为**只读观测**，不再回写 prefs；新增「系统偏好与当前开关不一致」橙色提示；
+>    `statusMessage` 改为「让系统设置在本次会话按当前开关状态重新加载」。
+>    `App.swift` 启动同步保留：写入成功后系统值与用户期望一致，真机验证重启不会覆盖。
+> ④ **验证**：全 harness `PASS=68 FAIL=0`（上轮 66 + 新增两趟变异）。
+>    P/S 段补 S26–S39（开启方向终态、文案、按压次数），P_W 补 PW36–PW46 双向接线守卫；
+>    新增 MUT9（verdict 写死成「只会关」→ S28/S29 红）、MUT10（按压次数写死 → S36/S38 红）。
+>    **两个自造的假绿坑**：MUT9 初版把变异打在 `apply→perform` 参数上，纯逻辑断言根本不调用
+>    那段，于是「没抓红」其实是变异没落在被测路径；改成打在 `verdict` 本体才有效。
+>    另修 `grep "^FAIL S2"` 前缀误匹配 `FAIL S28` 导致的假判红（统一改成 `^FAIL $CASE( |$)`）。
+> ⑤ **真机双向验收**（同签名 AX 探针点控件 `AX#2`）：
+>    开 → `PLIST 1→0`、`AX_FIND_CURSOR '0'→'1'`、文案「按「开启」重新加载 ✓ …光标会变大」；
+>    关 → `PLIST 0→1`、`AX_FIND_CURSOR '1'→'0'`、文案「按「关闭」…光标不再放大」；
+>    最终按用户诉求留在**开启且已重载**。重启 App 后开关仍为开（`PLIST=0`、checkbox=1），
+>    HID 参数 `-65536` 无红字。
+> ⑥ **顺带补完「继续」的原任务（冷启动窗口）**：注入 `HIDMouseAcceleration=0` → kill → 启动，
+>    高频采样到 `-65536` 只用 **0.33 秒**（进程出现后 0.01 秒），说明启动时序没有真空期，
+>    第二十七轮的「启动粘滞」确实不是启动慢，而是长跑后失败被固化。
+> ⑦ **未发版**：`Info.plist` 仍是 1.4.5 / 12，本机 = 线上 1.4.5 + 第二十六轮会话同步
+>    + 第二十七轮 HID 自愈 + 本轮双向同步。等用户说「推送」再抬版本发 Release。
+>    边界不变：画面效果程序观测不到，必须用户摇鼠标确认；「本次会话」只在本次运行内保留，
+>    重启回「尚未重载」是**少报**而非假绿。
+>
+> **2026-11-09 第二十七轮（「启动粘滞」= HID 写入失败被永久短路 + client 不自愈；本地已部署验收，未发版）**：
+> 用户只说「启动粘滞」。按 §4.8 的历史（用户曾把「静止后起步发黏」叫「启动慢」）先查真机、
+> 拿到硬证据再动手，没有先反问：
+> ① 现象复核：`hidutil --matching 鼠标` 读 `HIDMouseAcceleration = 0`（不是 -65536），
+>    设置页状态区 `USB Receiver … 回读 -0.000  ⚠️ 写入未生效`；而 `0` 正是 §4.8 记的
+>    「最小加速度、低速增益 <1」的起步发黏值。点「重新检测」**无效**，重启 App 立刻
+>    恢复 `-1.000 / -65536`。App 已连续运行约 1 天（uptime 3d21h，未重启机器）。
+> ② 根因两层，都靠证据排除：
+>    - **失败态被签名固化**：`apply()` 失败时把 `settled` 存成「实际读回值 0」，
+>      下一轮 `readings` 读到的还是 0 → `signature == appliedSignature` →
+>      `apply(force:false)` 直接短路，8 秒轮询**永远不再重写**。
+>      旧注释 / K18 断言都写着「存实际值以重试」，但只验了 `settled == 0`，
+>      没验重试真会发生 —— 断言本身就是假绿。
+>    - **client 不能重建**：`private let hidClient = IOHIDEventSystemClientCreateSimpleClient(...)`，
+>      长时间运行后 `IOHIDServiceClientSetProperty` 静默失效（写回显成功、读回恒 0），
+>      所以连 `refresh(force:true)` 也救不回来，只有重启进程才恢复。
+> ③ 修复（`Sources/PointerController.swift`）：新增纯函数 `PointerAccelRetryPolicy`
+>    （storedSignature / nextFailureCount / shouldRebuild / shouldQuickRetry）——
+>    **失败轮清空签名**，保证下一轮必定重写；成功轮照常缓存，短路优化不丢。
+>    连续失败 2 轮且过 30s 冷却 → `scheduleForceRefresh()` 重建 client + 全量重枚举；
+>    失败后 1 秒另有一次快速重试（上限 5 次，防每秒自循环）。`hidClient` 改 `var`，
+>    `refresh(force:true)` 时重建；失败文案补「（正在自动重试）」。
+>    两处旧注释「存失败值能让下轮签名不同」已更正（那正是假的）。
+> ④ harness：K 段扩到 K1–K34（K22 用**真实签名**模拟「下轮会不会短路」），
+>    K_W 补 KW10–KW18 + KW_PRE；新增 K_MUT3（恒缓存签名 → K21/K22/K23 红）、
+>    K_MUT4（失败计数恒 0 → K24/K25 红）、K_WMUT（改回 let / 绕过策略 / 摘掉快速重试
+>    → KW13/KW10/KW18 红）。**K_MUT3 第一轮把我自己写的占位串断言抓成假绿**：
+>    `"sig-ok"` 变异后碰巧仍不等于真实签名，K22/K23 不变红；改用真实签名后修好。
+>    全量 `PASS=66 FAIL=0`（上轮 63 + 3 段）。
+> ⑤ 真机验收：部署 `/Applications/Smoose.app`（备份 `/tmp/Smoose.app.prev-*`、验签通过）；
+>    启动 → `回读 -1.000 / -65536` 无红字；点「重新检测」（走重建 client）仍 `-1.000`；
+>    人为用 hidutil 注入漂移 0 → 11 秒后自动纠回 -65536。
+>    **验收边界**：句柄失效无法脚本化复现，所以「连续失败 → 自动重建」只由纯函数断言 +
+>    变异验证守住，没有真机端到端；需日常跑一段时间看是否复发。
+> ⑥ **未发版**：`Info.plist` 仍 1.4.5 / 12，本机 = 线上 1.4.5 + 光标放大会话同步 + 本轮自愈。
+>    §4.8 的老结论仍成立：**`-1` 是否真的消除主观发黏只能靠手感**；这轮修的是
+>    「参数掉回 0 且永不恢复」这个可观测 bug，不宣称解决所有手感问题。
+>
 > **2026-11-07 第二十四轮（DPI 非幂等写入实测 + 发版 v1.4.3；已发版、已提交）**：用户从
 > 待确认清单里点选「发版 / 提交」与「非幂等 DPI 往返实测」，按「先验证后发版」执行。
 > ① 新增 `Probe/HIDPPNonIdempotentRoundTrip.swift`（**手动开发探针，不进 harness**，
@@ -27,6 +501,68 @@
 > `SMOOSE_SWIFT_EXTRA=-disable-sandbox`；代理免费节点轮换时 `gh` 的 Go 客户端在 POST 上
 > 持续 EOF / TLS 超时，改用 `curl` 直调 REST + 幂等重试才通。历史各轮写的「未发版 / 未提交」
 > 是当时状态，均已随本轮 v1.4.3 关闭。
+>
+> **2026-11-07 第二十五轮（横屏设置窗口响应式多列，已扩到 3 列 + 修重复 section；本地已部署，未发版）**：
+> 用户问「横屏一页显示不全，有没有必要改多列」，随后确认要「自适应」并「可以超过两列」。
+> 结论：**多列是对的解法**，根因是固定 560×620 单列画布——矮屏上窗口被 OS 压到低于
+> 620 高时，`uiScale` 下限钳在 1，~576pt 内容就被裁掉底部。改造**没有重构缩放系统**
+> （`logicalSize` 横屏本就返回更宽逻辑画布），只是让标签页在画布够宽时切多列把高度压低：
+> ① `SettingsLayout.columns(forLogicalWidth:)`：`<760 → 1 列`，`[760,1140) → 2 列`，
+> `≥1140 → 3 列`（阈值 `twoColumnLogicalWidth=760` / `threeColumnLogicalWidth=1140`）；
+> `EnvironmentValues.layoutColumns` 默认 1，保证独立预览仍是单列。
+> ② `ResponsiveForm<Col0,Col1,Col2>`：三组内容**互不重复**，1 列时合并进一个 `Form`
+> （顺序 c0→c1→c2，外观同旧版），2 列时 c0 独立一列 + c1/c2 右列上下堆叠，3 列时三组各一列；
+> 都保持 `.grouped` 风格。
+> ③ `ScaledTabContent` 按逻辑画布宽度算列数注入环境。
+> ④ **滚动 / 指针 / 按键 / 游戏** 四页改成三组不重复分区；**按应用**（List 占满宽）与
+> **关于**（居中基准高度）保持单列。
+> ⑤ **顺手修了一个之前分栏留下的重复 bug**：General 的「轴向与方向 / 临时透传 / 按住加速 /
+> 预设」、Pointer 的「指针速度 / 说明 / 状态」、Game 的「就绪度」被同时复制进 left 与 right，
+> 单列 / 两列都会显示两份——现已按三组唯一分区消除重复。
+> ⑥ harness J 段补 J23–J28（560→1、759→1、760→2、1139→2、1140→3、2000→3）。
+> 全量 `PASS=59 FAIL=0`；本地 `/Applications/Smoose.app` 已部署（仍是 **1.4.3** 构建、
+> 验签通过、TeamIdentifier `6U2DQJ6Z2N` 不变，备份 `/tmp/Smoose.backup.20261107_162207.app`）。
+> **未发版、未提交、未推远端**——等你横屏实测（拖到约 1140pt 宽应看到 3 列）确认后再抬版本。
+>
+> **2026-11-07 第二十六轮（光标放大：设置页同步系统真值 + 不注销即时生效；本地已部署验收，未发版）**：
+> 用户连续反馈「关闭了移动鼠标放大，但它还会放大」「你要在设置里面同步」「要不注销也能生效」。
+> **上一轮的判断要更正**：先前把 `-10004 privilege violation` 当成「这条路走不通」，
+> 其实拦的是终端 `osascript` 进程；只读 TCC.db 确认 `kTCCServiceAccessibility | app.smoose.macos |
+> client_type=0 | auth_value=2` —— **Smoose 自己有辅助功能授权**（按 bundle id 授予，
+> 同证书签名的探针可继承）。`last` 也证实用户并未真正注销重登，所以「等你注销」不是解法。
+> ① `Probe/AXCursorZoomProbe.swift`（手动探针，不进 harness）：以 `app.smoose.macos` +
+> `Apple Development: qm0819@hotmail.com (5F66DDWD6H)` 签名成 `/tmp/SmooseAXProbe.app`，
+> 实测 `AXIsProcessTrusted()=true`，系统设置 Display 页里目标开关的稳定标识是
+> **`AXIdentifier = AX_FIND_CURSOR`**（SwiftUI checkbox 的 title/description 是空的，
+> 别按文案找）。`toggle` 实测：`AXValue 0 → 1 → 0`、plist `1 → 0 → 1`、两次 AXPress 均 rc=0。
+> 说明 GUI 拨动会走系统写入通道并触发 WindowServer 重载，无需注销。
+> ② `Sources/CursorZoom.swift` 新增 `CursorZoomSyncResult` / `CursorZoomSyncPolicy` /
+> `CursorZoomSessionSync`：两步 URL 打开 Display 页 → 最多 4s 轮询找 `AX_FIND_CURSOR` →
+> 当前为关时拨两次（关→开→关，中途短暂经过「开」只为触发写入）→ **四条硬门槛**缺一不宣称生效：
+> 两次 AXPress 都成功、拨动后值确实变了、终态 `AXValue=="0"`、落盘 `CGDisable…=="1"`。
+> 每个失败分支带具体原因（未授权 / 打开失败原因 / 找不到 / AXPress 错误码 / 无响应 / 终态不符），
+> 成功文案也**不替用户宣称画面效果**，明确「请摇动鼠标确认，程序无法代你观测」。
+> ③ `Sources/Views.swift` 指针页拆成两套状态：`系统偏好：…（进入本页时从系统读回）`
+> 与 `本次会话：尚未重载 / …结果`，`.onAppear { syncZoomFromSystem() }` 每次进页都从
+> cfprefsd 读回真值并同步本地缓存，消除「开关显示关、实物还在放大」的单一布尔假绿；
+> 新增 `Button("立即生效（无需注销）")`，失败时显示红字 + 重试。
+> ④ harness：P 段并入 S1–S25 纯逻辑断言（含 S10–S13 读不到值、S25 错误码优先级），
+> P_W 补 PW22–PW35 接线守卫；新增 P_MUT5–P_MUT8 四趟变异并**逐条反向验证**：
+> 短路四条硬门槛 → S4/S5/S7/S8/S9/S25 全红；只抹终态 → 仅 S8 红（S9 不误报）；
+> 只抹落盘 → 仅 S9 红（S8 不误报）；成功文案改成「已生效，无需确认」→ S17/S18 红。
+> 全量 **`PASS=63 FAIL=0`**（基线 59 + 4 趟变异）。
+> ⑤ 部署验收：`build.sh` 编译签名通过 → `/Applications/Smoose.app`（备份 `/tmp/Smoose.app.prev-*`），
+> `codesign --verify --deep --strict` 通过；二进制用 Python `bytes.count` 确认含
+> `AX_FIND_CURSOR` / `立即生效（无需注销）` / `请摇动鼠标确认`（**别用 `grep -a` 搜中文常量，会漏报**）。
+> 重启后 `open smoose://settings?tab=pointer`，用同签名 AX 探针读窗口文本，实测显示
+> 「系统偏好：已关闭」「本次会话：尚未重载」；再 AXPress 点「立即生效」，
+> 设置页变为「已让系统重新加载设置 ✓ 请摇动鼠标确认…」，plist 终值 `1`。
+> **主 App 内 `AXIsProcessTrusted()` 为真、整条链路端到端跑通**。
+> ⑥ **未发版**：`Info.plist` 仍是 1.4.5 / 12，本轮代码是「线上 1.4.5 + 会话同步」的本地构建。
+> 用户已回「好了」确认摇鼠标不再放大（画面效果只能由人确认，程序不代用户宣称）；
+> 复核时 plist=`1`、设置页仍显示 `.applied`。代码保持未发版，说「推送」后再抬版本发 Release。
+> ⚠️ 残留限制：「本次会话」状态只在本次 App 运行内保留，重启 App 会回到「尚未重载」（保守，不假绿）；
+> 画面效果本身程序观测不到，必须由人确认。
 >
 > **2026-11-07 第二十三轮（修「光标放大开启不生效」，未发版）**：用户截图显示
 > 「快速移动鼠标时放大光标图标」开关是蓝色，但功能没生效。真机复现确认
@@ -269,8 +805,12 @@
 
 ## 1. 项目状态
 
+> 下表前半段保留了历史快照；**当前实测以 `/Applications` 的 1.5.0 / build 14 和
+> 2026-11-15 反编译审计轮记录为准**。旧行里的 1.4.2、`PASS=27` 等数字是当时版本，不再是现值。
+
 | 项 | 状态 |
 | --- | --- |
+| 当前实测（2026-11-15） | `/Applications/Smoose.app` = **1.5.0 / build 14**，Mach-O sha256 `7e5ecc32bc6b0bc119da79af0d614303fed7fef8177e7531d6a32ce1617f1e39`，进程 pid 70747；源码 18 个 Swift 编译单元，全量 harness **PASS=104 FAIL=0**；本轮修距离守恒、加斜向锁定，并落地首屏状态条 / 一键诊断 / 简易高级模式 / 新增应用模板，未改版本号、未发版。 |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 / 游戏性能检测 / 合成事件触控板相位 / 点击刹车 全部已实现 |
 | 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**：2026-11-02 含游戏性能检测（Mach-O sha256 `cb00dbd3105ec7da…`）；**2026-11-03 第十五轮后含合成事件相位 + 点击刹车 + Dock 透传，Mach-O sha256 `f10ff7a677dbab1686639b90af85489e3227bfb3dff351f744c5e1f825d4358e`**（`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、`open -a` 启动无崩溃、`smoose://settings?tab=scroll` 弹出 560×548 设置窗），`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链（2026-11-03 清理轮已整体移至点号目录 `~/.smoose-rollbacks/`，不进 Spotlight，保留回滚能力；目录内 `MANIFEST.txt` 逐条记录版本 / build / sha256 / 体积 / 理由）：`Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / `Smoose-1.4.2-pre-gameperf.app`（含游戏功能前的最后一个可用版，可回滚）/ `Smoose-1.4.2-pre-phase.app`（含本轮相位功能前的最后一个可用版，Mach-O `cb00dbd3…`，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a。**2026-11-06 第十六轮重新部署**（含加速度漂移修复，未发版），Mach-O sha256 `7346f355db861bd135e9133a0b18ca849f5b37f04d85803ee7e51cfe51e173ff`，`PASS=27 FAIL=0`，真机端到端 6s 自愈已验证 |

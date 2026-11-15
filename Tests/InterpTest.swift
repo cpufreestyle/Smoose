@@ -57,6 +57,9 @@ scenario(label: "疯狂甩动 60 格（每 1 帧一格 ≈ 120Hz）", notches: 6
 scenario(label: "60Hz 屏幕 + 单格", fps: 60, notches: 1, everyFrames: 1)
 scenario(label: "极低顺滑度 0.05（干脆）", smoothness: 0.05, notches: 1, everyFrames: 1)
 scenario(label: "极高顺滑度 1.0（长尾）", smoothness: 1.0, notches: 1, everyFrames: 1)
+// 单帧输出上限是 512px；超过这个量时必须保留未发送的余量，不能把它记成已发送。
+// 这是 2026-11-15 反编译审计发现的真实距离丢失 bug。
+scenario(label: "巨大单格 2000px（验证 512px 截断不丢距离）", notches: 1, everyFrames: 1, notchPx: 2000)
 scenarioReverse()
 
 // 方向突变：先向下再向上

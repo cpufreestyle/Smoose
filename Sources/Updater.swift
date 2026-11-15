@@ -409,7 +409,7 @@ final class Updater: ObservableObject {
                     throw UpdateInstallError.checksumMismatch(expected: expect, actual: actual)
                 }
             }
-            installArchive(at: dest, cleanup: dir)
+            installArchive(at: dest, cleanup: dir, declaredVersion: manifest.version)
         } catch let e as UpdateInstallError {
             try? FileManager.default.removeItem(at: dir)
             phase = .failed(e.message)
@@ -441,7 +441,7 @@ final class Updater: ObservableObject {
     }
 
     /// 解压 zip → 找到 .app → 替换 /Applications/Smoose.app → 等用户重启。
-    private func installArchive(at archive: URL, cleanup: URL) {
+    private func installArchive(at archive: URL, cleanup: URL, declaredVersion: String?) {
         phase = .installing
         // 解压 + 拷贝可能几百毫秒到数秒。绝不能在主线程跑：
         // 主线程一卡，「正在安装」的界面就冻住，用户会以为程序挂了（2026-10-22）。
@@ -470,6 +470,17 @@ final class Updater: ObservableObject {
                 // 不校验就可能把一个不相关的 .app 覆盖到 /Applications/Smoose.app。
                 guard Self.bundleID(of: app) == Self.bundleIdentifier else {
                     throw UpdateInstallError.wrongBundle(Self.bundleID(of: app) ?? "未知")
+                }
+                // 版本源声明的版本必须和包内 plist 一致：否则「声明 9.9.9 → 指向旧包」
+                // 的静默降级会通过所有签名校验（旧包确实是官方签的）。
+                // declaredVersion 作为参数传进来，避免在后台队列里读 @Published。
+                switch UpdatePackageVersionCheck.verdict(
+                    declared: declaredVersion ?? "", bundleVersion: Self.bundleVersion(of: app)) {
+                case .match: break
+                case .missing:
+                    throw UpdateInstallError.bundleVersionMissing
+                case .mismatch(let declared, let actual):
+                    throw UpdateInstallError.versionMismatch(declared: declared, actual: actual)
                 }
                 // 签名校验才是身份校验：bundle id 谁都能写，Team ID 写不了
                 try Self.verifySignature(of: app)
@@ -534,6 +545,15 @@ final class Updater: ObservableObject {
               let obj = try? PropertyListSerialization.propertyList(from: data, format: nil),
               let dict = obj as? [String: Any] else { return nil }
         return dict["CFBundleIdentifier"] as? String
+    }
+
+    /// 读 .app/Contents/Info.plist 里的 CFBundleShortVersionString，读不到返回 nil。
+    static func bundleVersion(of app: URL) -> String? {
+        let plist = app.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: plist),
+              let obj = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dict = obj as? [String: Any] else { return nil }
+        return dict["CFBundleShortVersionString"] as? String
     }
 
     /// 换掉 /Applications/Smoose.app。旧版先搬到临时目录，成功后再删 ——
@@ -715,6 +735,10 @@ enum UpdateInstallError: Error {
     /// 签了、也有 Team ID，但不是我们期望的那个发布者
     case teamMismatch(actual: String, expected: String)
     case checksumMismatch(expected: String, actual: String)
+    /// 包内读不到版本，无法与版本源声明比对
+    case bundleVersionMissing
+    /// 版本源声明与包内真实版本不一致：可能是配置错，也可能是被指向了旧包
+    case versionMismatch(declared: String, actual: String)
 
     var message: String {
         switch self {
@@ -734,6 +758,10 @@ enum UpdateInstallError: Error {
             return "安装包签名 Team ID 是「\(actual)」，与预期的「\(expected)」不一致，已中止安装"
         case .checksumMismatch(let expected, let actual):
             return "安装包校验和不匹配（期望 \(expected.prefix(16))…，实际 \(actual.prefix(16))…），文件可能在传输中被替换，已中止安装"
+        case .bundleVersionMissing:
+            return "安装包里读不到版本号（CFBundleShortVersionString），无法确认它与版本源声明一致，已中止安装"
+        case .versionMismatch(let declared, let actual):
+            return "版本源声明 \(declared)，安装包里却是 \(actual)：可能是版本源配置错误，也可能被指向了旧包，已中止安装（签名校验不挡降级）"
         }
     }
 }

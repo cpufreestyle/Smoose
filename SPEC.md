@@ -15,9 +15,11 @@
 | Sources/UpdateModel.swift | 自动更新纯逻辑：SemVer 比较 + 版本清单解析（可离线编译） |
 | Sources/Updater.swift | 自动更新运行时：拉版本源 / 下载 / 解压 / 替换 / 重启 |
 | Sources/Views.swift | 所有 SwiftUI 界面 |
+| Sources/HelpText.swift | 悬停解释文案表（HelpKey → 文案）+ `smooseHelp` 统一入口 |
 | Sources/App.swift | @main：tap 安装 / 前台监听 / Onboarding |
 | Tests/InterpTest.swift | 插值离线测试（需复制成 main.swift 编译） |
 | Probe/main.swift | 指针加速度读写探针（写后还原，安全） |
+| Probe/AXHelpProbe.swift | 悬停解释真机探针：从 WindowServer 读回每个控件的 AXHelp（见 §36） |
 | run_tests.sh | 一键 harness（见 §7） |
 | build.sh | swiftc 构建 + 证书签名 + icns 打包 |
 
@@ -42,6 +44,9 @@
 ## 3. 双轴 / 反向 / 忽略触控板
 
 **契约**：垂直/水平独立平滑与反转；连续滚动事件（field 88/99/123 任一非零）在 ignoreTrackpad=true 时整事件透传。
+
+v1.5.0 起这条判定加了设备维度（见 §42）：`ignoreTrackpad` 只承担「没有设备级结论时的默认值」，
+归属到设备后由 `DeviceScrollPolicy` 三层判定接管；归属失败时行为与上述契约逐字等价。
 
 **断言（手工 M1）**：触控板双指滚动；观察 tap 无合成事件。
 
@@ -114,9 +119,10 @@ boostModifiers/boostFactor 且覆盖 speed；「跳过此 App」仍 enabled=fals
 | S33–S34 | 文本守卫菜单栏 / 关于页更新出口 | 菜单栏不显示下载/安装/待重启、加回「稍后再说」、关于页出口被挤掉 |
 | S35–S39 | 游戏页出口 / 合成事件相位 / 点击刹车 / 接线守卫 | 相位常量漂移、收尾帧丢失、UI 与引擎脱节 |
 | **I**（2026-11-06） | 编译真 `PointerController.swift` 验加速度签名对 **HID 参数读数漂移**敏感（14 项） | 系统把 `HIDMouseAcceleration` 重置回默认后永久短路（静置后起步发黏） |
+| **T**（2026-11-09） | 编译真 `Sources/HelpText.swift` 查文案表 + `tw_guard` 查 `Views.swift` 接线（47 键 / 40 处挂载）+ 三趟变异 | 键没文案、两句重复、加了键忘了接线、摘掉挂载没人报（详见 §36） |
 
 用法：
-    ./run_tests.sh                                        # 普通终端，离线，PASS=27 FAIL=0
+    ./run_tests.sh                                        # 普通终端，离线，PASS=104 FAIL=0
     SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agent 沙箱，Swift 宏需子进程）
 
 > ⚠️ **`--device` 的真实边界（2026-10-27 实测确认，勿再重复尝试）**：`--device` 段当前
@@ -1085,3 +1091,539 @@ asset `Smoose-1.4.3.zip` 1,096,543 字节、sha256 `c2d6daec…`，
 **环境坑**：`release.sh` 在受限环境必须带 `SMOOSE_SWIFT_EXTRA=-disable-sandbox`；
 代理节点轮换导致 `gh` 的写请求不稳，改用 `curl` REST + 幂等重试，
 且重试期间不得重新构建 zip（LC_UUID 会换 sha256）。详见 `HANDOFF.md` §6.1d。
+
+---
+
+## 30. HID 写入失败必须自愈（2026-11-09，「启动粘滞」）
+
+**真机证据**：App 连续运行约一天后，鼠标 `HIDMouseAcceleration` 停在 `0`（§28 记的
+「最小加速度 / 起步发黏」值），状态区常驻「⚠️ 写入未生效」；点「重新检测」无效，
+重启进程立刻恢复 `-65536`。`hidutil --matching` 与设置页读数一致，不是误报。
+
+**两条根因，别只修一条**
+
+1. **失败态被签名固化**：`apply()` 失败轮把 `settled` 存成实际读回值 `0`，下一轮
+   `readings` 仍是 `0` → 签名相等 → `apply(force:false)` 短路，8 秒轮询永远不再重写。
+   旧注释和 K18 断言都写「存实际值以重试」，只验 `settled == 0`，**没验重试真会发生**。
+2. **client 句柄不可重建**：`private let hidClient` 长期运行后失效，
+   `IOHIDServiceClientSetProperty` 写回显成功、读回恒 0；不重建 client，`refresh(force:true)`
+   也救不回来。
+
+**契约（`PointerAccelRetryPolicy`，纯函数）**
+
+- `storedSignature(successSignature:allOK:)`：只有全成功才缓存签名；**失败轮返回空串**，
+  保证下一轮 `apply(force:false)` 必定重写。成功轮短路优化不得丢。
+- `nextFailureCount` / `shouldRebuild(count:elapsed:)`：连续失败 2 轮且过 30s 冷却 →
+  `scheduleForceRefresh()` 重建 `hidClient` + 全量重枚举；冷却防止「失败→重建→又失败」死循环。
+- `shouldQuickRetry(count:)`：失败后 1 秒补一次重试（上限 5 次），不等 8 秒轮询；
+  上限防止设备永久写不进时每秒自循环。
+- `hidClient` 必须是 `var`，`refresh(force: true)` 时重建。失败文案要写「正在自动重试」。
+
+**断言与反向验证**
+
+- K1–K34：含 K22 用**真实签名**模拟「下轮读数 vs 缓存签名」是否短路；
+  K31–K34 覆盖快速重试与上限。K_W 补 KW10–KW18 接线守卫。
+- K_MUT3（恒缓存签名 → K21/K22/K23 红）、K_MUT4（失败计数恒 0 → K24/K25 红）、
+  K_WMUT（改回 `let` / 绕过策略 / 摘掉快速重试 → KW13/KW10/KW18 红）。
+- ⚠️ **写断言的坑**：K22/K23 初版用占位串 `"sig-ok"` 比较，变异成「恒缓存」后
+  碰巧仍不等于真实签名，两条不变红 —— 变异验证先把我自己的假绿断言抓了出来。
+  **断言必须用真实签名做输入，才能区分「清空」与「缓存了别的非空值」。**
+
+**真机验收**：部署后启动 `回读 -1.000 / -65536` 无红字；点「重新检测」（走重建 client）
+仍 `-1.000`；hidutil 注入漂移 `0` → 11 秒自动纠回 `-65536`。全 harness `PASS=66 FAIL=0`。
+**未覆盖**：句柄失效无法脚本化复现，「连续失败 → 自动重建」只有断言 + 变异覆盖，
+需长期运行观察；§28 的主观手感结论不变，`-1` 是否消除发黏仍只能人工验收。
+
+---
+
+## §31 光标放大「立即生效」必须双向（2026-11-09）
+
+**契约**：`CursorZoomSessionSync` 的终态**永远由用户当前开关决定**，不许假设「用户只想关掉」。
+
+- `desiredEnabled=true` → 目标 `AXValue="1"`、落盘 `CGDisable…=0`、文案「光标会变大」；
+- `desiredEnabled=false` → 目标 `AXValue="0"`、落盘 `=1`、文案「光标不再放大」。
+- 已是目标态时 `needsDoublePress` 返回 true（离开再回来拨两次），否则拨一次即到位；
+  两个方向同走 `verdict` 的四条硬门槛（按压成功 / 值真的变了 / 终态 / 落盘）。
+- 设置页 `.onAppear` 只把 `CursorZoomController.systemEnabled` 读回来**显示**，
+  绝不回写 `prefs.cursorZoomEnabled`；两者不一致时显式提示「点立即生效让系统追平」。
+- 成功文案必须保留「请摇动鼠标确认…（画面效果程序无法代你观测）」，
+  开与关都不得替用户宣称画面已生效。
+
+**为什么**：上一版把终态写死「关」，用户打开功能后点「立即生效」反被拨回关，
+还显示「确认光标不再放大」；同时 `.onAppear` 用系统值覆盖开关，构成方向性的假绿。
+`HANDOFF.md` 第二十八轮有完整真机证据链。
+
+**反向验证**：P/S 段 S26–S39、P_W 守卫 PW36–PW46、变异 MUT9（写死成「只会关」→
+S28/S29 红）与 MUT10（按压次数写死 → S36/S38 红）。注意变异必须落在**纯逻辑本体**上：
+打在 `apply→perform` 参数上不会被断言覆盖，看似「没抓红」其实是变异没进被测路径。
+另：断言编号前缀会撞车（`^FAIL S2` 会匹配 `FAIL S28`），一律用 `^FAIL $CASE( |$)`。
+
+## §32 光标放大：开关变化自动重载 + 重载记录（2026-11-09）
+
+**契约（不可回退）**：
+
+- 写盘成功（`CursorZoomApplyResult.ok`）才安排自动会话重载；写入失败时开关会回弹，
+  绝不能拨系统设置（会把系统拨到没有用户意图的方向）。防抖 600ms，连续拨只跑最后一次。
+- **不能加「方向变了才跑」这个条件**：`prefs.cursorZoomEnabled` 是本地缓存，可能与系统真值不一致，
+  用户拨到「看起来没变」的值恰恰是会话滞后最需要重载的一次。
+- 自动路径与手动按钮必须共用同一个 `CursorZoomSessionSync.apply(desiredEnabled:)`，
+  即同一套四条硬门槛；不得因为「自动」就跳过终态校验、失败提示或用户确认。
+- ledger（`smoose.zoom.lastSync`）只记录**成功触发过的重载方向 + 时间戳**，写后独立读回校验；
+  失败结果一律不记账，否则重启后会显示假的「已按目标态重载」。记录必须带方向，不能只存时间戳。
+- 状态文案分三态：`never` / `upToDate(enabled)` / `stale(previous, desired)`；
+  禁止出现「尚未重载」（那是 App 丢了记录，不是系统状态回退），
+  也禁止出现「已生效，无需确认」，成功仍要写「画面效果仍需你自己确认」。
+- 焦点：`apply` 在 `perform` **之前**取 `NSWorkspace.frontmostApplication`，完成后用
+  `NSRunningApplication.activate(options: [.activateAllWindows])` 恢复；
+  不使用 `NSApp.activate(ignoringOtherApps:)`（macOS 27 真机实测会把前台掉到 Finder）。
+
+**为什么**：macOS 的 WindowServer 只在登录会话启动时读 `CGDisableCursorLocationMagnification`，
+第三方写 plist 不热重载；只有系统设置自己拨 `AX_FIND_CURSOR` 才触发会话重载。
+让用户在每次拨开关后再点一次「立即生效」是把系统限制转嫁给用户，应自动完成；
+按钮保留为失败重试 / 用户主动触发。
+
+**反向验证**：S40–S61、P_W 守卫 PW47–PW69、变异 MUT11–MUT14 与 P_WMUT。
+全量基线 `PASS=73 FAIL=0`。冷启动首轮约 20 秒、之后约 2.4 秒，stale 文案须如实标注首次耗时。
+验收时不要拿「App 运行中直接读磁盘 plist」的快照判断 ledger —— cfprefsd 可能还没 flush。
+
+---
+
+## 35. v1.4.6 发版闭环（2026-11-09）
+
+- **D30 发版前必须确认「线上上一版到底含什么」**：用 `curl` 下载线上 `v1.4.5` asset、解出 Mach-O，
+  再用 Python `bytes.count` 比对关键常量（别用 `grep -a` 搜中文常量，会漏报）。
+  实测线上 1.4.5 里 `AX_FIND_CURSOR` / `CursorZoomSessionSync` / `CursorZoomAutoSyncPolicy` /
+  `PointerAccelRetryPolicy` / `CursorZoomSyncLedger` 计数全 0，新包分别 ≥1；`SettingsLayout` 两边同为 26。
+  所以 Release notes 只写 26–29 轮增量，别把已在 1.4.5 的布局修复重复算进去。
+- **D31 打包与上传分离**：`release.sh` 不带 `--github` 只出本地包；上传用 `curl` REST 幂等脚本。
+  每次 POST 前先 GET 确认（超时 ≠ 失败）、asset 走 `uploads.github.com`、失败重试**绝不重建 zip**
+  （每次 build 的 LC_UUID 变化会让 sha256 改变，notes / manifest 就对不上）；
+  闭环以 `GET /releases/latest` 的 asset `digest` 与本地 sha256 比对为准，不靠「命令返回 0」。
+  `dist/Smoose-1.4.6.json` 的 `url` 需发布成功后补填。
+- **D32 端到端验收链**：测试 `PASS=73 FAIL=0`（含变异）→ 打包 → 发布 → 下载 asset 逐字节比对 →
+  解压验签（顶层 app / 版本 1.4.6/13 / bundle id / `TeamIdentifier=6U2DQJ6Z2N`）→
+  真源码 `UpdateCheck.decide` 对线上 `releases/latest`（1.4.3/1.4.4/1.4.5 → `available(1.4.6)` 且 url 正确、
+  1.4.6/1.5.0 → `upToDate`）→ 部署本机 → 授权保留 → 重启无崩溃。
+- **D33 TCC 授权查询路径**：辅助功能授权记录写在**系统级**
+  `/Library/Application Support/com.apple.TCC/TCC.db`，用户级 `~/Library/...` 查不到；
+  只读查询用 `sqlite3 "file:...?mode=ro"`。同证书重新签名时 DR 绑定证书而非 cdhash，升级不掉授权。
+- 本轮产物：Release `v1.4.6` / id `439040662` / asset `Smoose-1.4.6.zip` 1130497 字节 /
+  sha256 `0db37dcbd6218d278dd83b2ce6c3b34920df00b23e620bc9d5eb27119bdefa15`；
+  本机 `/Applications/Smoose.app` 二进制 sha256 `d65b1502…84a2`。
+
+## 36. 悬停解释（2026-11-09，「有必要的地方加入悬停显示解释」）
+
+**契约**：设置页 / 菜单栏面板里「看标签猜不出语义」的控件，鼠标悬停 1 秒左右弹出解释。
+文案只说三件事——这个数字 / 开关改变什么、单位和系统默认值、以及容易误用的组合；
+一眼能看懂的开关不放（悬停气泡太多会变成噪音，用户干脆不再悬停）。
+
+**实现形状**（改动只允许沿这一条走，别在调用点散落字符串）：
+
+| 层 | 文件 | 职责 |
+| --- | --- | --- |
+| 键 | `Sources/HelpText.swift` `enum HelpKey` | 控件语义的稳定名。按「控件在界面上作用」命名，不按存储字段命名（同一字段在全局 + 每应用两处出现） |
+| 文案 | `HelpText.text(_:)` | 每个键一句中文解释。T 段对这张表本身做断言 |
+| 入口 | `View.smooseHelp(_:)` 三个重载 | 唯一调用形状：要统一加延迟 / 改 AppKit 直设 toolTip，只改这一处 |
+| 挂载 | `Sources/Views.swift` | 每处控件挂一个键 |
+
+`LabeledSlider` 走**两条路**：滑条下方常驻一行小字（`Text(HelpText.text(help))`），
+整行再挂 `.smooseHelp(help)`。常驻小字在窗口变窄或字号变大时会被压掉，悬停那条不占布局。
+`ModifierBypassRow` 同形。Toggle / Picker / Button 只有悬停一条路（它们没有可压缩的常驻位）。
+
+**断言**（harness T 段，`SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh`）：
+
+| 编号 | 断言 | 抓什么 |
+| --- | --- | --- |
+| T1–T4 | 编译真 `HelpText.swift`：键齐全 / 非空 / ≥12 字 / 无 TODO 残留 | 加了键忘写文案、拿占位短句糊弄 |
+| T5 | 两句解释不能完全一样 | 复制粘贴漏改 —— 症状是「悬停半天发现说的是另一项」，比没有解释更难发现 |
+| T6 | 文案不能等于键名 | 把驼峰键名当文案填了 |
+| T7 | 可选键重载对 nil 不产生文案 | 形状守卫（无头环境弹不出气泡） |
+| T_W 1 | `LabeledSlider` 必须同时有常驻小字和悬停挂载 | 只写一半 |
+| T_W 2 | 不许留裸字符串 `help: "…"` | 绕过文案表，文案就守不住了 |
+| T_W 3 | **每个键都必须在 `Views.swift` 里有调用点** | 定义了没人用 = 死文案 |
+| T_W 4 | 悬停挂载总量 ≥ 20 | 只挂一两个等于没做 |
+| T_W 5 | `HelpKey?` 重载必须存在 | `LabeledSlider` / `ModifierBypassRow` 传可选键 |
+| T_MUT1 | 清空一条文案 → T2 报红 | 变异没落在被测路径 |
+| T_MUT2 | 全网同一句 → T5 报红 | 同上 |
+| T_WMUT | 摘掉滑条悬停挂载 → T_W 的「滑条没挂悬停气泡」成立 | 接线抓得到 |
+| T_MUT3 | 摘掉 `addAppRule` 挂载，把整条 `tw_guard` 喂给副本 → 必须报「未接线的键: addAppRule」 | 自证式变异的替代：守卫自己在坏源码上跑一遍 |
+
+**T_W 的两个假绿 / 虚报坑（2026-11-09 修，都是 zsh + BSD grep 的）**：
+
+1. `for C in $TCASES` —— 本脚本是 zsh，默认**不做单词拆分**，`$TCASES` 会变成
+   「一整串带换行的参数」；而 BSD `grep -F` 把 pattern 里的空行当成「匹配任意行」，
+   于是这条检查**恒真**，从来没抓到过未接线的键。必须写 `${=TCASES}`。
+2. 边界正则只写 `[^A-Za-z0-9]` 会**虚报**：`help:` 那一路的实参常常跨行
+   （`ModifierBypassRow(..., help: .boostModifiers` 换行再写 `)`），而行尾符不参与
+   grep 逐行匹配。要写 `([^A-Za-z0-9]|$)`，且 `$` 必须是双引号串末的裸 `$`
+   （写 `\$` 会被 grep 当成字面美元符号，恒不匹配）。
+3. `${C}` 的显式花括号不能省：`$C[^A-Za-z0-9]` 会被 zsh 当成对 `C` 取下标，
+   报 `bad math expression`。
+
+**真机验收（唯一不依赖「摇鼠标看画面」的客观证据）**：`Probe/AXHelpProbe.swift`
+用 `AXUIElementCopyAttributeValue(k, "AXHelp")` 从 WindowServer 读回每个控件真实挂上的
+toolTip。`.help()` 在某些容器里会被吞掉，源码全绿而真机悬停毫无反应 —— 只有这条路能抓到。
+
+    swiftc -O Probe/AXHelpProbe.swift -o /tmp/axhelp && /tmp/axhelp --expand
+    # 2026-11-09 实测：6 个 tab + 设置窗口共 99 个控件带 tooltip
+    # tab0 常规 43 / tab1 指针 30 / tab2 每应用 11 / tab3 按键 6 / tab4 游戏 1 / tab5 关于 4
+
+`--all` 把没有 tooltip 的控件也列出来（排查「该挂没挂」只能靠这个）；`--expand`
+点开每应用的折叠行。菜单栏面板是 `NSPopover`，不出现在 `kAXWindowsAttribute` 里，
+探针读不到，那一处的悬停只由 T_W 的源码级守卫覆盖。
+
+**本轮未覆盖的边界**：每应用「细节参数」折叠组里的轴向开关（6 个新键）在真机 AX 树上
+读不到 —— 折叠内容连 AX 树里都没有，且 `focusAppID` 只能从菜单栏面板设置，脚本无法展开。
+这 6 处的证据是：文案在出厂二进制里逐条命中 + T_W 3 要求每个键都有调用点
+（且 Views.swift 随 E 段整包编译）+ 同一个 `List` 容器里的「接管」复选框与两个滑条
+已实测带 tooltip。要补真机读数，需要手工点开折叠组后重跑探针。
+
+**顺带修掉的既有问题**：`smoose://settings?tab=N` 的 tab 顺序与代码注释里写的
+（0 常规 1 每应用 2 按键 3 游戏 4 关于 5 指针）不一致，实测是
+0 常规 1 指针 2 每应用 3 按键 4 游戏 5 关于。探针注释已按实测改。
+
+## 37. 指针线性接管的取证与生效条件（2026-11-10 真机实测）
+
+**契约**：
+- 「鼠标刚动 / 停久了再动时像被控制，手速上来就正常」不是 Smoose 在拦指针，而是 macOS
+  自己的指针加速曲线：速度相关，低速增益 < 1。按当前配置（`pointerSpeedManaged=false`、
+  `factor=1`）`handlePointerMove` 的 `needRewrite` 恒 false，mouseMoved 原样透传。
+- 关掉那条曲线的唯一手段是「接管加速度 → 线性」：给外接鼠标的 HID 服务写
+  `HIDMouseAcceleration = -65536`（-1.000 = 加速与灵敏度均禁用，严格 1:1）。
+- **0 不是关闭**：0 = 最小加速度，曲线仍在（只是最弱），正是发黏手感的来源；
+  系统默认是 163840（2.500）。
+- 写入只落在「符合 GenericDesktop/Mouse 用法」的服务上：G502 X 的 USB Receiver 暴露
+  鼠标 / 键盘 / 消费类控制共 5 个集合，`IOHIDServiceClientConformsTo(GD_Mouse)` 只认其中
+  2 个鼠标集合，写入也只落这 2 个；键盘与 consumer 集合上的同名键与指针手感无关。
+- 生效条件：写入只在 Smoose 运行期间被（重）套。退出 App 后已写入的值**不会**丢；
+  但 App 没在跑时发生的一次系统侧重置，会一直停在新值上直到下次启动。
+
+**断言（已验证）**：
+- A1 冷启动取证：App 未运行 → 两个指针服务读 0；`open -g` 启动 12 秒内 → 两个服务都变
+  -65536，状态区同步「线性 1:1（加速与灵敏度均禁用）· 回读 -1.000」。
+- A2 持久性：`quit app "Smoose"` 后仍 -65536；App 退出状态下鼠标静置约 4 分钟、5 次采样
+  仍 -65536。
+- A3 排除重启 / 睡眠：`uptime` = 5 天 15 小时，`pmset -g log` 无 sleep/wake 事件。
+- A4 探针与 App 视图在「好状态」下一致：`Probe/AccelReadProbe.swift` 只读，报 2/2 线性，
+  与状态区「回读 -1.000」互相印证。（坏状态下是否也一致未验证，见下。）
+
+**未验证项**：
+- 0 的来源未定位：机器 5 天未重启、写入退出不丢、静置不丢，所以只能是「App 上次长时间
+  运行期间写入漂移」（2026-11-09 记录过：跑约一天后停在 0、重启 App 立刻恢复）之后 App
+  被退出，再无人改写。要定位必须先复现漂移。
+- 漂移机制（怀疑旧 client 的 `IOHIDServiceClientCopyProperty` 回显读到的是写入值而非内核
+  真值，使 8 秒轮询签名恒等、永久短路）**只是推测，零证据**，不得当作结论使用。
+- 「线性之后是否还发黏」是主观指标，只能人工验收。
+
+## 38. 同名设备不是重复：物理身份与列表消歧（2026-11-10 真机实测）
+
+**契约**：
+- 列表里出现多行同名设备**不是重复，不得合并**。真机实测：系统同时挂着两个物理罗技接收器
+  （`USB Receiver@01120000` PID 50504 / `USB Receiver@03100000` PID 50503，不同 USB 口、
+  不同接口数、不同 `DeviceUsagePairs`），而两者的 `Product` 字符串完全相同（都叫 `USB Receiver`）。
+  合并成一行会谎报设备数，并让加速度写入少写一台（`apply` 是对 `devices` 逐台写的）。
+- 反过来，原样显示两行同名也不行：用户无法判断接管覆盖了哪几台。正确做法是
+  **同名时追加物理标识**，单设备时保持原名（加后缀纯属噪音）。
+- 标识优先级：`ProductID`（用户能拿去和系统报告 / G HUB 对照）→ `LocationID`（USB 位置）
+  → 都没有（蓝牙 / 内建）就原名，**不编造假标识**。
+- 写入路径不因显示消歧而改变：`devices` 仍是全量，`eligible` / `skipped` 的筛选逻辑不动。
+
+**断言（已验证）**：
+- B1 `ioreg -l -w0` 树形结构证实两个 `IOUSBHostDevice` 节点（@01120000 / @03100000），
+  PID 与 LocationID 均不同；用 `IOHIDServiceClient` 读两台的 `DeviceUsagePairs` 也证实不同。
+- B2 部署后 AX 树读回：游戏页三行标题为 `USB Receiver（PID 50504）` /
+  `Apple Internal Keyboard / Trackpad（内置）` / `USB Receiver（PID 50503）`；
+  指针页设备行与加速度状态行同样带 PID。
+- B3 消歧纯函数 `DeviceLabel` 的 7 条分支由 harness H42 覆盖（含「单设备不加后缀」
+  「PID 优先」「退回 USB 位置」「两者都没有就原名」）。
+- B4 全量 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → PASS=79 FAIL=0。
+- B5 加速度接管未被消歧改动破坏：部署后两个指针服务独立读回均为 `HIDMouseAcceleration = -65536`。
+
+**未验证项**：
+- 「两个接收器各自对应哪只具体鼠标 / 键盘」无法从 HID 属性判定（两者 Product 同名），
+  只能由用户按 USB 口物理插拔确认。
+- `lghub_agent` 在每个接口上持有 user client 是否会在某个时刻回写 HID 参数
+  （可能解释 2026-11-10 早些时候那个 `HIDMouseAcceleration = 0`）**未验证**。
+
+## 39. 自动重载调度加固与更新器安全闭环（2026-11-10，「你定」）
+
+**边界**：只做能靠纯函数 / 文本守卫断言守住、且**不碰滚动与采样热路径**的改动；
+所有契约都由 `run_tests.sh` 的 Z / Z_W / Z_W2 / Z_MUT / Z_WMUT 守护，最终 PASS=89 FAIL=0。
+
+### 39.1 会话重载调度（`CursorZoom.swift`）
+
+- **串行而非取消**：`CursorZoomSyncQueue.submit/finish` 保证 `apply` 一次只跑一个；
+  运行中又来的目标只记最后一次，跑完补一次。取消已进 `perform` 的任务无效（同步 AX 调用
+  取消不了），跳过则会丢掉最后一次开关方向。`debounceTask` 只追踪「尚未开始」的防抖等待。
+- **冷启动判定必须在 `open()` 之前**：读 `NSWorkspace.runningApplications` 里
+  `com.apple.systempreferences` 是否存在。之后读永远是「已在运行」。`pollDelaysMilliseconds`
+  给固定 16 次轮询分配间隔：冷启动 16×1600ms≈25.6s，已在跑 16×250ms=4s；次数与
+  `for _ in 0..<16 {`、`guard let t = target` 两处精确串不变，找不到照样判 `targetNotFound`。
+- **第二压前置条件**：`shouldPerformSecondPress` 要求 `press1Code == 0` **且**
+  `afterFirst != before`。首压报错或值没变都不得再按，否则开关被留在非目标态、plist 反相，
+  却只回一句失败。
+- **落盘读回**：`shouldKeepWaitingForStored` 最多 8×125ms 等异步写盘；等不到照旧交给
+  `verdict`，四条硬门槛一个都不放宽。
+- **焦点恢复**：`shouldRestoreFocus` 仅当当前前台仍是系统设置才 `activate`；用户已切走不拽回。
+- **不变**：600ms 防抖、`verdict` 四条硬门槛、ledger 失败不写、双向 `desiredEnabled`、
+  PW34/35/31/48–53/65–69 的精确串、「请摇鼠标自行确认」、§32 禁止的「方向没变就跳过」。
+
+### 39.2 更新器（`UpdateModel.swift` / `Updater.swift`）
+
+- `Asset.digest` 解析 `assets[].digest` 的 `sha256:` 前缀，回落到 `manifest.sha256`；
+  顶层显式值优先，非 sha256 前缀一律不认。默认 GitHub 源从此**真的**有 sha256 校验。
+- `UpdatePackageVersionCheck.verdict`：解压后读包内 `CFBundleShortVersionString`，
+  与 `manifest.version` 按 SemVer 归一化比对；不一致 → `versionMismatch`，读不到 →
+  `bundleVersionMissing`。**签名只证明「谁发的」，不证明「发的是哪一版」**，所以这条不能省。
+  `declaredVersion` 以参数传入后台队列，避免读 @Published。
+- **不变**：`codesign --verify --deep --strict` + `TeamIdentifier`、`zip -y`、
+  `smoosePointerConfigChanged` 通知路径（S31a–e）、`replaceApp` 回滚。
+
+### 39.3 反向验证（本轮抓到一次断言假绿）
+
+- 6 趟源码变异 + 1 趟接线变异，每趟先确认「文件确实被改 + MUTANT 标记存在」，
+  再要求对应 `FAIL Zxx` 标签变红 **且进程非零退出**。
+- `Z_MUT_press2` 初版 rc=0 没抓红：Z18 的负例里「首压报错」与「值没变」同时成立，
+  短路 `press1Code == 0` 后仍被另一条件挡住 —— 断言表达不了具体原因。补 `Z40`
+  （首压报错但值已变）单独卡住该条件后全部抓红。**写断言必须让每个条件都有专属负例。**
+- 编译验证：`build.sh` RC=0、`codesign --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`。
+  `strings` 查 Swift 方法名报 0 是假阴性（不进 cstring 段），以 `nm -a` 为准。
+
+### 39.4 发版与文档
+
+- `scripts/publish.sh`：curl REST 幂等（POST 前 GET、重试前 GET、同名 asset digest 一致跳过、
+  `GET /releases/latest` 四项闭环、回填 manifest），`--dry-run` 只做本地前置自检。
+  **发布是不可逆操作，须用户单独确认；助手不得擅自执行。**
+- ⚠️ `release.sh` 不带 `--github` 会重写已发布的 `dist/<ver>.zip` 并清空 manifest 的 url；
+  发布后不要重跑。本地 dist 与线上 asset 字节不一致时，以线上 digest 为准。
+- README 三处过期数字已校正；SPEC / HANDOFF 章节编号重复问题**本轮未动**（会断大量交叉引用）。
+
+### 39.5 本轮明确不做（有真实回归面）
+
+`Model.persist()` 独立 scrollSig 解耦（不能复用 `pointerSig`）、GamePerf 按页门控
+（动 S35/S36 采样契约）、`findTarget` 主线程 AX 遍历、文档章节重排。
+理由见 HANDOFF 第三十四轮 ⑦ 与 11-09 工作记忆。
+
+## 40. HID++ 协议层边界与接收器排查（2026-11-12，「1 2」）
+
+**契约**：`Sources/HIDPPProtocol.swift` 是唯一平台无关的 HID++ 代码，只允许
+`import Foundation`，只含 0x2201 报文常量、DPI 列表解析、档位计算、SET 报文构造与
+写入结果判定；不得出现 IOKit / AppKit / SwiftUI / CoreGraphics、IOHIDDevice、
+CFRunLoop、NSWorkspace、DispatchQueue。设备枚举、`IOHIDDeviceSetReport(0x11)`、
+接收器轮询与 DPI 自动同步策略全部留在 `LogitechHIDPP.swift`。
+
+**为什么值得抽**：这是全项目唯一能跨平台复用的逻辑（约 115 行纯函数），但收益是
+「让 Smoose 自身更干净、更好测」，**不是**为移植铺路 —— Windows/Linux 侧传输层与 UI
+已有 OpenLogi / Solaar 等现成实现。不要把它当成跨平台第一步。
+
+**防假绿**：抽文件最怕「抽出去就没人测了」。因此 L 段直接编译新文件，L_MUT / L_MUT2
+直接在新文件上做变异并仍须被 L23 / L16/L17 抓红；`proto_purity_guard`（P1–P4）盯住
+平台纯度并带前置条件（必须仍有 `HIDPPDPIParser` / `HIDPPDPIWrite`），L_MUT3 注入
+`import IOKit` 必须变红；LW14 要求 `build.sh` 真的编译新文件。最终 `PASS=90 FAIL=0`。
+
+**接收器现状（只读探针实测）**：两个物理接收器 `0xc547` / `0xc548`，各有一个
+`0xFF00` HID++ 控制接口；前者支持 0x2201（featureIndex=7），后者返回 0 不支持。
+竞争进程 G HUB agent、Logi Options+ agent、BetterTouchTool 与 Smoose 同驻。
+注意 macOS 的 IOKit 允许多 client 打开同一 HID 设备，**不同于 Windows Bolt/Unifying
+接收器「一次只允许一个应用持有 HID++」**；macOS 上的风险是同一 0xFF00 通道并发
+请求造成响应串扰，排查方向应是报文 swId / 回显校验，而不是「谁抢占了设备」。
+`Probe/HIDPPReadOnlyProbe.swift` 只枚举属性，不 open、不 SetReport、不注册回调。
+
+## 41. 滚动配置签名解耦（2026-11-12，「继续」）
+
+### 41.1 契约
+
+`Model.persist()` 不再无条件调用 `ScrollEngine.shared.apply(s)`。只有
+`ScrollConfigSnapshot` 变化时（含首次 `previous == nil`）才 apply；其余字段只落盘。
+
+签名字段全集来自 `ScrollEngine.swift` 的 `config.*` 读取点与
+`StoredState.profile(for:)` / `bindings(for:)`：
+
+| 读取位置 | 依赖字段 |
+| --- | --- |
+| `profile(for:)`（M:250-259），由 `apply` 与 `setActiveApp` 重建 `cachedProfile` | `masterEnabled` / `global` / `apps` |
+| `bindings(for:)`（M:245-247），ScrollEngine:409 | `bindings` / `appBindings` |
+| ScrollEngine:218-219 | `pointerSpeedManaged` / `pointerSpeedFactor` |
+| ScrollEngine:307-311 / :419 / :426-427 | `ignoreTrackpad` / `deviceVerdicts` / `swapBackForward` / `triggerOnMouseUp` |
+
+**不参与签名的字段**：`launchAtLogin`、`pointerAccelManaged`、
+`pointerAccelerationValue`、`pointerIncludeBuiltIn`（已废弃）、`cursorZoomEnabled`、
+`autoCheckUpdates`。它们变化时不碰滚动引擎。
+
+### 41.2 不可越过的三条边界
+
+1. **不得复用 `pointerSig` 做门控**。它只含 3 个 HID 加速度字段，而这三个正是
+   ScrollEngine 完全不读的。按它 gate，改主开关 / 倍率 / 前后键交换 / 触发时机 /
+   每应用配置时 `config` 停留旧值 —— 严重静默回归，不是小风险。
+2. **S31a–e 文本守卫与 `.smoosePointerConfigChanged` 通知路径原样保留**；
+   `UserDefaults.standard.set(data, forKey: Self.key)` 必须照常，否则
+   `cursorZoomEnabled` 等字段重启后回默认。
+3. **`PointerController.shared.apply(force: false)` 仍无条件调用**：它自带
+   `appliedSignature` 短路，且通知路径会驱动 `refresh(force:false)`；本轮不碰，
+   同步 IOKit 那部分收益留待后续单独评估。
+
+`ScrollEngine.shared.install(initial:)` 之后首次 `persist()` 仍会 apply 一次
+（`lastAppliedScrollConfig == nil`），与改动前行为一致且启动时无滚动手势，无害。
+
+### 41.3 反向验证
+
+Q 段整编真 `Model.swift` + 计数桩，断言的是真源码行为而非脚本副本：
+
+- Q1–Q2 首次必 apply / 相同不 apply。
+- Q3–Q12 **逐字段**验证 10 个相关字段改动必触发 apply —— 漏一个字段即变红。
+- Q30 v1.5.0 追加：`deviceVerdicts`（设备级判定）同样参与签名。
+- Q13–Q18 逐个验证 6 个无关字段改动不触发 apply。
+- Q19–Q25 真 `persist()` 序列：拨 `cursorZoomEnabled`、`autoCheckUpdates`、
+  `pointerAccelerationValue` 后 `ScrollEngine.applyCount` 保持 1；改 `global.speed`、
+  `triggerOnMouseUp` 后依次变 2、3。
+- Q26 指针路径照常、Q27–Q29 三个无关字段仍照常落盘。
+- Q_W 接线守卫（门控 / 落盘 / S31 路径 / pointerSig 原文）。
+- 五趟负例：`Q_MUT_field`（漏一个字段 → Q9 红）、`Q_MUT_gate`（短路门控 → Q20–Q23 红）、
+  `Q_MUT_persist`（顺手 gate 落盘 → Q27–Q29 红）、`Q_MUT_verdict`（判定漏出签名 → Q30 红）、
+  `Q_WMUT`（接线守卫自身 → QW1 红）。
+
+全量基线 `PASS=90 FAIL=0` → **PASS=96 FAIL=0**，退出码 0。
+v1.5.0 追加 V 段 6 项后为 **PASS=102 FAIL=0**（见 §42.3）。
+
+### 41.4 明确不做：GamePerf 按页门控
+
+`Views.swift:796-800` 把「数据来自本来就在跑的 tap + CVDisplayLink，打开页面零额外开销」
+写成刻意设计；`refreshDevices()` 挂在 1Hz `recompute`，`recordPointer` 在 tap 独立线程。
+按页 `stop()` 会造成设备列表 stale、首次进页无样本，还要给跨线程热路径加同步原语，
+收益可能为负且无实测瓶颈。**CVDisplayLink 是插帧刚需，任何时候都不得停**。
+
+## 42. 设备级滚动类型识别（v1.5.0）
+
+设计文档：[docs/device-detection-design.md](docs/device-detection-design.md)。
+本节只固化契约与断言，实现理由见设计文档。
+
+### 42.1 契约
+
+1. **归属**：`DeviceAttribution` 用 `IOHIDManager` **非独占**监听
+   `GenericDesktop/Mouse|Pointer` 与 `Digitizer/TouchPad|TouchScreen` 集合，
+   每设备只记录「最后一次 HID 上报的 mach 时间」；`handleWheel` 用
+   `CGEvent.timestamp` 在 **50ms** 窗口内就近匹配。不 open / 不 seize / 不改写输入。
+2. **设备键**：`builtin`（内置）/ `pid:<PID>@loc:<LocationID>`（外接）/
+   `pid:<PID>@name:<Product>`（蓝牙，无 LocationID）/ `name:<Product>`（无 PID）/ `unknown`。
+   `registryID` 重新插拔会变，**不得**用于持久化。
+3. **能力**：`DeviceCapabilityClassifier` 按 HID 集合判定，多集合只升不降
+   （`touchSurface` > `wheelMouse` > `unknown`）。
+4. **三层判定**：`DeviceScrollPolicy.shouldIgnore` = 用户覆盖
+   （`StoredState.deviceVerdicts[键]`，缺键 = `.auto`）→ 设备能力 → `continuous && ignoreTrackpad`。
+5. **硬不变式**：`device == nil` 且 `verdict == .auto` 时，结论必须**逐字等于**
+   `continuous && config.ignoreTrackpad`，即 v1.4.6 的行为。
+6. **降级**：输入监控权限被拒、匹配不到、时间窗失配，一律让归属返回 nil，
+   功能整体静默失效而不是影响滚动接管。
+7. **持久化**：`deviceVerdicts` 走 `StoredState` 的 `decodeIfPresent`，
+   旧配置文件解码后为空表；该字段参与 `ScrollConfigSnapshot`，改判定必须重新 `apply`。
+
+### 42.2 断言（run_tests.sh V 段，编译真源码）
+
+- V1–V4b 五种设备键形态，含 `registryID` 无关性与全空兜底。
+- V5a–V5c 能力分类，V6a–V6c 多集合合并优先级。
+- V7 `continuous` × `ignoreTrackpad` 四组合的退化路径（硬不变式 5）。
+- V8–V9 用户覆盖压过能力层与启发式。
+- V10 `touchSurface` 不依赖 phase 字段即放行；V11 误报鼠标不再被当成触控板忽略。
+- V12 旧配置解码，V13 判定落盘往返，V14 判定参与滚动签名，V15 三档标签齐全。
+- V_W 接线守卫：`handleWheel` 必须真的调 `DeviceAttribution` + `DeviceScrollPolicy`，
+  且旧的 `if continuous && config.ignoreTrackpad {` 短路不得残留。
+- 三趟负例：`V_MUT_override`（覆盖层失效 → V9 红）、`V_MUT_fallback`（退化路径丢
+  `ignoreTrackpad` → V7 红）、`V_MUT_builtinkey`（丢 `builtin` 分支 → V1 红）。
+
+全量基线 `PASS=96 FAIL=0` → **PASS=102 FAIL=0**（追加 S40 后为 103，见 §43）。
+
+### 42.3 已知取舍
+
+`wheelMouse` 能力对「触控面类但上报成 Mouse 集合且发连续事件」的设备（Magic Mouse、
+部分高分辨率滚轮鼠标）会改变 v1.4.6 的行为：这类设备不再被 `ignoreTrackpad` 放行，
+而是交给平滑。设计上认定这是修复而非回归，误判时用设备行的「滚动判定」单独改回。
+
+## 43. 设备插拔与设备表刷新（2026-11-14 修复，P2）
+
+**现象**：没开「接管加速度」时插上新鼠标，指针页设备列表不出现新设备，要重开设置才看得到；
+v1.5.0 新增的「自动识别为」也停在窗口打开那一刻。
+
+**根因**（两条，独立）：
+1. `PointerController.startDeviceWatch()` 只 `IOHIDManagerCreate` + `Open` + 注册回调，
+   **从未 `ScheduleWithRunLoop`**。IOHIDManager 的回调只在已挂到在跑的 run loop 上才派发，
+   所以 matching / removal 一次都不触发。插拔实际全靠 8 秒兜底轮询，
+   而该轮询第一行是 `guard Preferences.shared.pointerAccelManaged else { return }` ——
+   没开接管的用户没有任何刷新路径。§4.5 / D24 记录的「插拔事件驱动」实际从未生效。
+2. `DeviceAttribution` 不是 `ObservableObject`，行视图直接读静态方法，
+   插拔后不会重绘。
+
+**修复**：
+- 把 manager 挂到主 run loop（回调本就只是把重刷丢回主线程，不必另起线程）。
+- `DeviceAttribution` 改 `ObservableObject` + `@Published private(set) var devices`，
+  登记/移除时在主线程发新快照；`PointerDeviceRow` 改订阅它。
+
+**断言**：S40a（必须 `ScheduleWithRunLoop(..., CFRunLoopGetMain())`）、
+S40b（`DeviceAttribution: ObservableObject`）、S40c（行视图订阅设备表）。
+
+**未验证**：物理插拔需要真机插拔一次才能确认端到端；代码层面只能保证回调被派发的前提条件成立。
+
+## 44. 单帧距离守恒与大滚动量截断（2026-11-15 反编译审计轮）
+
+**契约**：`ScrollAxis.advance(dt:tau:)` 每帧最多向消费端投递 ±512px，但 `sent`
+只能累计本帧**实际投递**的像素；未投递的余量必须留在 `current - sent` 中，下一帧继续
+投递，最终 `sent == target == current`。
+
+**根因**：旧实现先在 `sent += whole` 记录完整 due，再对返回值做 ±512 截断。单帧 due
+超过 512px 时，超出部分被记成已发送，之后不会再出现在 `due` 中，造成永久距离丢失。
+这不是 UI 显示误差，而是高倍率、高分辨率滚轮或加速键场景下的真实滚动距离缺失。
+
+**断言**：
+
+- `Tests/InterpTest.swift` 新增「巨大单格 2000px」场景：默认 `speed=2.4`，预期
+  `2000 × 2.4 = 4800px`；修复前实际 2112px，修复后必须精确回到 4800px。
+- A 段继续要求所有常规场景的「预期总距离 = 实际总距离」，且方向突变输出存在。
+- 全量 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **PASS=104 FAIL=0**。
+
+**边界**：只改输出记账顺序，不改变每帧 ±512px 的节流上限，不改变 `adaptiveTau`、
+相位、点击刹车或任何用户配置。`ScrollCurve` 与 UI 曲线预览不需要改。
+
+## 45. 斜向锁定（2026-11-15）
+
+**契约**：`ScrollProfile.axisLockThreshold` 默认 0（关闭）。大于 0 时，如果一次滚动的
+较小轴 / 较大轴 ≤ 阈值，则丢弃较小轴；两轴比例超过阈值时保留原始双轴。只过滤事件分解，
+不改变主方向的滚动距离；负号原样保留，非有限值返回 `(0, 0)`。阈值在内部夹到 0...1。
+
+**实现**：`Sources/ScrollAxis.swift` 的 `ScrollAxisLock.apply(vertical:horizontal:threshold:)`
+是纯函数；`ScrollEngine.handleWheel` 在原始行数 / 加速倍率之后、`prepare` 之前调用。
+全局和每应用 profile 均可独立设置；套用预设时保留用户阈值，旧配置 `decodeIfPresent` 兜底 0。
+
+**断言**：run_tests.sh A2 编译真 `Sources/ScrollAxis.swift`，覆盖关闭、垂直主方向、水平主方向、
+比例超过阈值、负号、恰好等于阈值、阈值夹到 1、单轴和 NaN。T_W 同时要求全局与每应用两处
+`.smooseHelp` 接线和文案存在。S18e/S18f 验证套用预设仍保留用户阈值、默认值为 0。
+
+## 46. 设置页易用性 P0（2026-11-15）
+
+**首屏状态条**：常规页顶部用 `HealthStatus.items` 的纯数据快照展示四项状态：
+辅助功能权限、滚动接管（总开关 + 权限 + event tap）、指针设备数、当前 App 是否命中专属规则。
+异常项点击跳转：权限到「关于」、接管到「滚动」或「关于」、设备到「指针」、当前 App 到「按应用」。
+
+**一键诊断**：关于页的「复制诊断报告」调用 `HealthStatus.report` 写入剪贴板，报告包含版本、
+权限、tap 状态、当前 App / bundle、专属规则、设备数、最近滚动来源与回环计数；
+「重新检测」会重新校验权限、`ScrollEngine.revalidateTap()`、`PointerController.refresh(force:)`
+与 `LogitechHIDPP.refresh()`。没有把诊断报告伪装成「修复成功」，它只提供可复制的证据。
+
+**简易 / 高级模式**：`@AppStorage("smoose.advancedSettings")` 默认 false。简易模式保留
+总开关、输出方式、常用曲线、预设、开机；高级模式才显示滚轮行数、最小步长、曲线预览、
+轴向 / 反向 / 斜向锁定、临时透传和按住加速。模式只改变可见性，不改持久化配置。
+
+**断言**：S18-S28 编译真 `Model.swift`，覆盖状态四项、全绿条件、异常红色 / 黄色、
+报告标题、版本与 tap 字符串；J_W 继续守住六页 `ScaledTabContent` 与 TabView 根视图。
+
+## 47. 添加应用：自动识别与手动模板（2026-11-15）
+
+**自动模板白名单**：`ScrollProfile.suggested(forBundleID:)` 只对保守 bundle id 分组：
+聊天（微信 / QQ / Slack / Discord / Teams）→「聊天软件」；浏览器（Safari / Chrome / Edge /
+Firefox / Arc / Brave）→「浏览器」；终端与编辑器（Terminal / iTerm2 / VSCode / Xcode / Zed）→
+「原生 App」。未知 App 返回 nil，调用方沿用全局，不做模糊猜测。
+
+**新增流程**：按应用页顶部 `@AppStorage("smoose.newAppPreset")` 选择「自动识别」或任一预设。
+手动选择优先于自动白名单；自动模板只改曲线参数，并保留全局的 boost、模拟触控板和斜向锁定。
+新增后每行提供「套用预设模板」菜单，可再次切换，也可从全局复制。
+
+**断言**：S18-S28 编译真 `Model.swift` 断言聊天 / 浏览器 / 编辑器 / 未知 App 的自动分组；
+模板存在性另由 S23d/S23e 守住。UI 使用 `profileForNewApp` 与 `preservingGlobalOutput` 接线。

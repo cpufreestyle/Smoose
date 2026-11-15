@@ -60,6 +60,27 @@ enum ScrollCurve {
     }
 }
 
+/// 斜向滚动锁定（独立实现，参考公开的「方向锁定阈值」交互，不复制第三方源码）。
+///
+/// 触控板 / 高分辨率滚轮在垂直滚动时经常带出很小的横向分量，表现为页面轻微左右抖。
+/// 当较小轴 / 较大轴低于阈值时，丢弃较小轴；两轴都比较大时保持原样，真正的斜向操作不被吃掉。
+/// `threshold <= 0` 完全关闭，返回值与输入逐字相同。
+enum ScrollAxisLock {
+    static func apply(vertical: Double, horizontal: Double, threshold: Double) -> (vertical: Double, horizontal: Double) {
+        guard vertical.isFinite, horizontal.isFinite else { return (0, 0) }
+        let limit = min(1.0, max(0.0, threshold))
+        guard limit > 0, vertical != 0, horizontal != 0 else { return (vertical, horizontal) }
+
+        let ay = abs(vertical)
+        let ax = abs(horizontal)
+        let major = max(ay, ax)
+        let minor = min(ay, ax)
+        guard major > 0, minor / major <= limit else { return (vertical, horizontal) }
+        if ay >= ax { return (vertical, 0) }
+        return (0, horizontal)
+    }
+}
+
 /// 单个滚动轴的插值状态机（纯逻辑，可离线测试）
 struct ScrollAxis {
     private(set) var target: Double = 0   // 期望总位移（px）
@@ -110,8 +131,14 @@ struct ScrollAxis {
         let due = current - sent
         if abs(due) >= 1 {
             let whole = trunc(due)
-            sent += whole
-            return Int32(max(-512, min(512, whole)))
+            // 单帧输出上限是 512px（给消费端留出处理时间），但 sent 只能记录
+            // 真正投递出去的像素。旧实现先 `sent += whole` 再截断输出，超过 512px
+            // 的部分会从账本里消失：例如一次需要 1600px 的滚动，只发出 512px，
+            // sent 却前进 1600px，后续永远补不回来。先把本帧实际输出夹紧，再记账，
+            // 余量留在 current - sent 里，下一帧继续投递。
+            let capped = max(-512, min(512, whole))
+            sent += capped
+            return Int32(capped)
         }
         // 已到位：把 ≥0.5px 的余量结掉，保证距离守恒
         if abs(target - current) < 0.05 {

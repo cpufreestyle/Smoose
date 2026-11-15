@@ -144,6 +144,43 @@ struct PointerDeviceRef: Equatable {
     var name: String
     var transport: String
     var builtIn: Bool
+    /// USB 位置标识（`LocationID`）。同一只罗技接收器的不同集合会共享它，
+    /// 两个不同接收器则必然不同 —— 这是「是不是同一个物理设备」的判据。
+    var locationID: UInt32
+    /// USB 产品 ID（`ProductID`）。0 = 非 USB 设备（蓝牙 / 内建）。
+    var productID: UInt32
+}
+
+/// 设备行的标签合成。
+///
+/// **2026-11-10 真机背景**：用户看到「游戏」页有两行都叫 `USB Receiver`，第一反应是
+/// 「有两个重复了吗」。实测那是**两个不同的物理罗技接收器**，插在两个不同的 USB 口上
+/// （`USB Receiver@01120000` PID 50504 / `USB Receiver@03100000` PID 50503）——
+/// 系统给它们的 `Product` 字符串完全相同，所以只看名字根本分不出来。
+/// 结论：不能靠去重把它们合成一行（会谎报设备数，也会让加速度写入少写一台），
+/// 正确做法是**同名时追加物理标识**，让用户自己看出这不是重复。
+///
+/// 纯函数，不碰 IOKit，harness 可直接断言（见 run_tests.sh H42）。
+enum DeviceLabel {
+    /// 列表里是否存在同名设备。两行同名就是用户误判成「重复」的直接原因。
+    static func hasSameNameSibling(name: String, in names: [String]) -> Bool {
+        names.contains { $0 == name } && names.filter { $0 == name }.count > 1
+    }
+
+    /// 生成行标题。`ambiguous=false` 时原样返回名字 —— 只有一个设备时加后缀纯属噪音。
+    /// 优先用 PID（用户能拿去和 G HUB / 系统报告对照），PID 拿不到再退回 USB 位置；
+    /// 两者都没有（蓝牙 / 内建）就只能原名，不能编一个假标识。
+    static func disambiguate(_ name: String, productID: UInt32, locationID: UInt32,
+                             ambiguous: Bool) -> String {
+        guard ambiguous else { return name }
+        if productID != 0 {
+            return "\(name)（PID \(productID)）"
+        }
+        if locationID != 0 {
+            return String(format: "\(name)（USB 位置 0x%08X）", locationID)
+        }
+        return name
+    }
 }
 
 struct GameDeviceInfo: Identifiable, Equatable {
@@ -151,6 +188,8 @@ struct GameDeviceInfo: Identifiable, Equatable {
     var name: String
     var transport: String
     var builtIn: Bool
+    var locationID: UInt32
+    var productID: UInt32
     /// 设备上报间隔（µs）。IORegistry 的 `ReportInterval`，是鼠标板载配置的真实值。
     /// 2026-11-02 实测：G502 X 接收器 = 1000 µs（1000 Hz），内置触控板 = 8000 µs（125 Hz）。
     var reportIntervalUs: Double
@@ -177,6 +216,8 @@ struct GameDeviceReader {
                            name: ref.name,
                            transport: ref.transport,
                            builtIn: ref.builtIn,
+                           locationID: ref.locationID,
+                           productID: ref.productID,
                            reportIntervalUs: reportIntervalUs(registryID: ref.registryID))
         }
     }

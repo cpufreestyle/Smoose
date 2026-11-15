@@ -106,6 +106,21 @@ final class ScrollEngine {
         trustTimer = nil
     }
 
+    /// 设置页状态条只读这一项，不直接暴露 CFMachPort。
+    var isTapRunning: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return tap != nil
+    }
+
+    /// 「重新检测」使用：已授权但 tap 丢失时补建；未授权时重新启动信任轮询。
+    func revalidateTap() {
+        if Self.trusted(prompt: false) {
+            ensureTap()
+        } else {
+            startTrustPolling()
+        }
+    }
+
     static func trusted(prompt: Bool) -> Bool {
         if prompt {
             let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
@@ -284,6 +299,12 @@ final class ScrollEngine {
             || event.getIntegerValueField(F.phase) != 0
             || event.getIntegerValueField(F.momentum) != 0
 
+        // 设备归属（v1.5.0）：影子监听按 HID 上报时间记录设备活跃度，
+        // 这里用事件自带的 mach 时间戳在 50ms 窗口内就近匹配。
+        // 匹配不到（无输入监控权限 / 蓝牙抖动 / 时间窗失配）时 device == nil，
+        // 下面的判定会退化成 `continuous && ignoreTrackpad`，与 v1.4.6 逐字等价。
+        let device = DeviceAttribution.shared.device(forTimestamp: event.timestamp)
+
         // 取值策略：
         //  · 触控板/连续设备 → fixedPt 本身就是像素（16.16），保留亚像素精度
         //  · 滚轮鼠标 → pointDelta，即系统自己做的 line→pixel 换算，保证不同鼠标的"每格"语义一致
@@ -293,12 +314,19 @@ final class ScrollEngine {
         lock.lock()
         guard let profile = cachedProfile else {
             lock.unlock()
-            publishMonitor(rawY: rawY, continuous: continuous, handled: false)
+            publishMonitor(rawY: rawY, continuous: continuous, handled: false, deviceName: device?.name)
             return Unmanaged.passUnretained(event)
         }
-        if continuous && config.ignoreTrackpad {
+        // 三层判定：用户覆盖 > 设备能力 > 事件启发式（DeviceScrollPolicy）。
+        // ignoreTrackpad 的语义收窄为「没有设备级结论时的默认值」。
+        let shouldIgnore = DeviceScrollPolicy.shouldIgnore(
+            continuous: continuous,
+            ignoreTrackpad: config.ignoreTrackpad,
+            verdict: device.flatMap { config.deviceVerdicts[$0.key] } ?? .auto,
+            capability: device?.capability)
+        if shouldIgnore {
             lock.unlock()
-            publishMonitor(rawY: rawY, continuous: continuous, handled: false)
+            publishMonitor(rawY: rawY, continuous: continuous, handled: false, deviceName: device?.name)
             return Unmanaged.passUnretained(event)
         }
         // Launchpad 透传（移植 Mos `ScrollUtils.getLaunchpadActivity`）：
@@ -308,14 +336,14 @@ final class ScrollEngine {
         // 但 Dock 自身（叠放目录预览）也吃原生滚动更稳，透传没有副作用。
         if activeAppID == "com.apple.dock" {
             lock.unlock()
-            publishMonitor(rawY: rawY, continuous: continuous, handled: false)
+            publishMonitor(rawY: rawY, continuous: continuous, handled: false, deviceName: device?.name)
             return Unmanaged.passUnretained(event)
         }
         // 修饰键透传：按住时不对该次滚动做任何接管（精确操作场景）
         if profile.bypassModifiers != 0,
            (event.flags.rawValue & profile.bypassModifiers) != 0 {
             lock.unlock()
-            publishMonitor(rawY: rawY, continuous: continuous, handled: false)
+            publishMonitor(rawY: rawY, continuous: continuous, handled: false, deviceName: device?.name)
             return Unmanaged.passUnretained(event)
         }
         let pureForward = !profile.smoothVertical && !profile.smoothHorizontal
@@ -334,8 +362,11 @@ final class ScrollEngine {
                                       modifiers: profile.boostModifiers,
                                       factor: profile.boostFactor,
                                       eventFlags: event.flags.rawValue)
-        let scaledY = rawY * lineScale * boost
-        let scaledX = rawX * lineScale * boost
+        let filtered = ScrollAxisLock.apply(vertical: rawY * lineScale * boost,
+                                            horizontal: rawX * lineScale * boost,
+                                            threshold: profile.axisLockThreshold)
+        let scaledY = filtered.vertical
+        let scaledX = filtered.horizontal
 
         if profile.smoothVertical {
             axisY.push(prepare(scaledY, profile: profile, reverse: profile.reverseVertical, continuous: continuous))
@@ -356,7 +387,7 @@ final class ScrollEngine {
         }
         lock.unlock()
 
-        publishMonitor(rawY: rawY, continuous: continuous, handled: true)
+        publishMonitor(rawY: rawY, continuous: continuous, handled: true, deviceName: device?.name)
         return nil
     }
 
@@ -549,7 +580,7 @@ final class ScrollEngine {
 
     private var lastPush = Date.distantPast
 
-    private func publishMonitor(rawY: Double, continuous: Bool, handled: Bool) {
+    private func publishMonitor(rawY: Double, continuous: Bool, handled: Bool, deviceName: String? = nil) {
         let now = Date()
         if now.timeIntervalSince(lastPush) < 0.25 { return }
         lastPush = now
@@ -557,6 +588,7 @@ final class ScrollEngine {
             Monitor.shared.rawDelta = rawY
             Monitor.shared.isContinuous = continuous
             Monitor.shared.handled = handled
+            Monitor.shared.deviceName = deviceName
         }
     }
 }
@@ -567,8 +599,11 @@ final class Monitor: ObservableObject {
     @Published var rawDelta: Double = 0
     @Published var isContinuous: Bool = false
     @Published var handled: Bool = false
+    /// 归属到的来源设备（v1.5.0）。nil = 没能归属，判定走事件启发式。
+    @Published var deviceName: String?
 
     var sourceName: String {
-        isContinuous ? "触控板 / Magic Mouse" : "滚轮鼠标"
+        if let deviceName { return deviceName }
+        return isContinuous ? "触控板 / Magic Mouse" : "滚轮鼠标"
     }
 }

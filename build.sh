@@ -30,13 +30,16 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
   "$ROOT"/Sources/PointerController.swift \
   "$ROOT"/Sources/ScrollEngine.swift \
   "$ROOT"/Sources/GamePerf.swift \
+  "$ROOT"/Sources/DeviceAttribution.swift \
   "$ROOT"/Sources/UpdateModel.swift \
   "$ROOT"/Sources/Updater.swift \
   "$ROOT"/Sources/Views.swift \
+  "$ROOT"/Sources/HelpText.swift \
   "$ROOT"/Sources/SettingsLauncher.swift \
   "$ROOT"/Sources/App.swift \
   "$ROOT"/Sources/CursorZoom.swift \
   "$ROOT"/Sources/LogitechHIDPP.swift \
+  "$ROOT"/Sources/HIDPPProtocol.swift \
   "$ROOT"/Sources/main.swift \
   "$ROOT"/Sources/TouchEvents.c
 

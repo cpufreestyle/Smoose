@@ -10,6 +10,19 @@ final class ActiveAppInfo: ObservableObject {
     static let shared = ActiveAppInfo()
     @Published var bundleID: String?
     @Published var name: String?
+    /// 设置窗口被激活时前台会变成 Smoose 自己；这里保留最后一个非 Smoose 的前台，
+    /// 供状态条和「为当前 App 微调」使用，避免把 Smoose 当作用户要配置的应用。
+    @Published var lastExternalBundleID: String?
+    @Published var lastExternalName: String?
+
+    func update(bundleID: String?, name: String?) {
+        if let bundleID, bundleID != "app.smoose.macos" {
+            lastExternalBundleID = bundleID
+            lastExternalName = name
+        }
+        self.bundleID = bundleID
+        self.name = name
+    }
 }
 
 // MARK: - 菜单栏面板
@@ -35,26 +48,30 @@ struct MenuBarPanel: View {
             header
             Divider()
             Toggle("启用平滑滚动", isOn: $prefs.masterEnabled)
+                .smooseHelp(.masterEnabled)
                 .toggleStyle(.switch)
                 .font(.system(size: 13, weight: .medium))
 
             VStack(alignment: .leading, spacing: 10) {
                 LabeledSlider(title: "距离倍率", value: $prefs.global.speed, range: 0.2...8, unit: "×",
-                              help: "≈4× 接近 Chrome/Safari 原生距离，≈1.5× 接近原生 AppKit 控件")
+                              help: .speed)
                 LabeledSlider(title: "滚轮行数", value: $prefs.global.wheelLines, range: 0.2...5, unit: " 行",
-                              help: "每格滚轮走多少行（只影响滚轮鼠标，触控板不受影响；1 = 系统原样）")
+                              help: .wheelLines)
                 LabeledSlider(title: "顺滑度", value: $prefs.global.smoothness, range: 0...1, unit: "",
-                              help: "越大尾巴越长，越小越干脆")
+                              help: .smoothness)
                 LabeledSlider(title: "最小步长", value: $prefs.global.minStep, range: 0...30, unit: "px",
-                              help: "低于此值的微动也会被放大，避免轻推无反应")
+                              help: .minStep)
                 ScrollCurvePreview(profile: prefs.global, compact: true)
+                    .smooseHelp(.curvePreview)
             }
             .disabled(!prefs.masterEnabled)
 
             Divider()
             Section("轴") {
                 Toggle("垂直平滑", isOn: $prefs.global.smoothVertical)
+                    .smooseHelp(.smoothVertical)
                 Toggle("水平平滑", isOn: $prefs.global.smoothHorizontal)
+                    .smooseHelp(.smoothHorizontal)
             }
             if prefs.global.boostModifiers != 0 {
                 Text("按住加速键可滚得更远（\(String(format: "%.1f", prefs.global.boostFactor))×）")
@@ -178,13 +195,13 @@ struct MenuBarPanel: View {
     private var footer: some View {
         HStack {
             Button {
-                if let id = active.bundleID {
+                if let id = active.lastExternalBundleID ?? active.bundleID {
                     NavState.shared.focusAppID = id
                     NavState.shared.selectedTab = 2   // 每应用
                 }
                 openSmooseSettings()
             } label: {
-                Label("为 \(active.name ?? "当前 App") 微调", systemImage: "slider.horizontal.3")
+                Label("为 \(active.lastExternalName ?? active.name ?? "当前 App") 微调", systemImage: "slider.horizontal.3")
             }
             Button {
                 openSmooseSettings()
@@ -245,6 +262,22 @@ enum SettingsLayout {
         return CGSize(width: width / s, height: height / s)
     }
 
+    /// 列数由「窗口实际像素宽度」决定（见 `ScaledTabContent` 的调用点）。
+    /// 内容画布按 `logicalSize` 布局、再用 `scaleEffect` 铺满窗口，因此每列的
+    /// 视觉宽度恒等于「窗口宽 / 列数」，与缩放系数无关。直接拿窗口实际宽判断，
+    /// 才不会掉进「横屏宽矮窗逻辑宽被放大、全屏标准宽屏逻辑宽被压小」的倒置坑
+    /// （2026-11-07 真机：非全屏 1600×760 出 3 列、全屏 1920×1080 反而 2 列）。
+    /// - 2 列阈值 760：默认 560 基准窗口之下为单列；拖宽到 760+ 即切 2 列。
+    /// - 3 列阈值 1140：更宽的窗口再切出第三列；三列各约 380pt+，表单仍可读。
+    ///   全屏（1920+）必然越过此阈值，保证「全屏列数 ≥ 非全屏」。
+    static let twoColumnWindowWidth: CGFloat = 760
+    static let threeColumnWindowWidth: CGFloat = 1140
+    static func columns(forWindowWidth w: CGFloat) -> Int {
+        if w >= threeColumnWindowWidth { return 3 }
+        if w >= twoColumnWindowWidth { return 2 }
+        return 1
+    }
+
     /// 本地诊断入口：解析 smoose://settings?w=…&h=… 里的窗口点数尺寸。
     /// 没有 UI scripting 权限的环境里，用它把窗口拉大来验证等比缩放。
     /// 只接受 300...4000 的合理尺寸，其余一律忽略，不影响正常开窗。
@@ -262,6 +295,54 @@ enum SettingsLayout {
         guard let w = width, let h = height,
               w >= 300, w <= 4000, h >= 300, h <= 4000 else { return nil }
         return CGSize(width: w, height: h)
+    }
+}
+
+/// 当前标签页应使用的列数（1 或 2），由 `ScaledTabContent` 按逻辑画布宽度注入。
+/// 默认 1，保证未注入环境时（如独立预览）仍是单列。
+private struct LayoutColumnsKey: EnvironmentKey {
+    static let defaultValue: Int = 1
+}
+extension EnvironmentValues {
+    var layoutColumns: Int {
+        get { self[LayoutColumnsKey.self] }
+        set { self[LayoutColumnsKey.self] = newValue }
+    }
+}
+
+/// 横屏 / 宽窗响应式容器：把标签页内容分成最多 3 列以压低高度，避免「一页显示不全」。
+/// 三组内容（col0 / col1 / col2）互不重复，按列数并排或堆叠：
+/// - 1 列（窄窗）：合并进同一个 `Form`，顺序 col0 → col1 → col2，外观与改造前一致；
+/// - 2 列（宽窗）：col0 独立一列，col1 + col2 在右列上下堆叠；
+/// - 3 列（超宽窗）：三组各占一列。
+/// 三种形态都保持 `.grouped` 表单风格。
+struct ResponsiveForm<Col0: View, Col1: View, Col2: View>: View {
+    let columns: Int
+    @ViewBuilder let col0: () -> Col0
+    @ViewBuilder let col1: () -> Col1
+    @ViewBuilder let col2: () -> Col2
+
+    var body: some View {
+        if columns >= 3 {
+            HStack(alignment: .top, spacing: 14) {
+                Form { col0() }.formStyle(.grouped)
+                Form { col1() }.formStyle(.grouped)
+                Form { col2() }.formStyle(.grouped)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if columns >= 2 {
+            HStack(alignment: .top, spacing: 14) {
+                Form { col0() }.formStyle(.grouped)
+                VStack(alignment: .leading, spacing: 14) {
+                    Form { col1() }.formStyle(.grouped)
+                    Form { col2() }.formStyle(.grouped)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Form { col0(); col1(); col2() }.formStyle(.grouped)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }
 
@@ -285,7 +366,11 @@ private struct ScaledTabContent<Content: View>: View {
             let usableH = max(1, geo.size.height - tabBarInset)
             let s = SettingsLayout.uiScale(width: geo.size.width, height: usableH)
             let logical = SettingsLayout.logicalSize(width: geo.size.width, height: usableH)
+            // 列数按窗口「实际像素宽度」判定：每列视觉宽 = 窗口宽 / 列数，
+            // 与缩放系数无关；用实际宽才能避免全屏标准宽屏反而列数变少的倒置。
+            let cols = SettingsLayout.columns(forWindowWidth: geo.size.width)
             content()
+                .environment(\.layoutColumns, cols)
                 .frame(width: logical.width, height: logical.height)
                 .scaleEffect(s, anchor: .topLeading)
                 .padding(.top, tabBarInset)
@@ -315,95 +400,238 @@ struct SettingsWindow: View {
     }
 }
 
-struct GeneralTab: View {
-    @EnvironmentObject var prefs: Preferences
+/// 首屏四格健康状态。观察到异常时直接给下一步入口，不让用户自己在六个 tab 里找。
+struct HealthStrip: View {
+    let snapshot: HealthSnapshot
+    let onPermission: () -> Void
+    let onTakeover: () -> Void
+    let onDevice: () -> Void
+    let onApp: () -> Void
+
+    private var items: [HealthItem] { HealthStatus.items(snapshot) }
 
     var body: some View {
-        Form {
-            Section("全局") {
-                Toggle("启用平滑滚动", isOn: $prefs.masterEnabled)
-                Toggle("忽略触控板 / Magic Mouse（推荐）", isOn: $prefs.ignoreTrackpad)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("当前状态", systemImage: "waveform.path.ecg")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("点异常项可跳转修复")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
             }
-            Section("输出方式") {
-                Toggle("模拟触控板滚动（推荐）", isOn: $prefs.global.simulateTrackpad)
-                Text("把平滑后的滚动标记成触控板滚动（带开始 / 结束 / 惯性相位），Chrome、Safari 等会直接采用上面调好的曲线，不再二次加工；个别 App 表现异常时关掉即可，关掉后完全回到旧的「滚轮 + 像素」行为。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            Section("曲线") {
-                LabeledSlider(title: "距离倍率", value: $prefs.global.speed, range: 0.2...8, unit: "×",
-                              help: "≈4× 接近 Chrome/Safari 原生距离，≈1.5× 接近原生 AppKit 控件")
-                LabeledSlider(title: "滚轮行数", value: $prefs.global.wheelLines, range: 0.2...5, unit: " 行",
-                              help: "每格滚轮走多少行（只影响滚轮鼠标，触控板不受影响）")
-                LabeledSlider(title: "顺滑度", value: $prefs.global.smoothness, range: 0...1, unit: "",
-                              help: "插值时间常数，越大越顺滑")
-                LabeledSlider(title: "最小步长", value: $prefs.global.minStep, range: 0...30, unit: "px",
-                              help: "量化下限")
-                ScrollCurvePreview(profile: prefs.global)
-            }
-            Section("轴向与方向") {
-                HStack {
-                    Toggle("垂直平滑", isOn: $prefs.global.smoothVertical)
-                    Toggle("垂直反向", isOn: $prefs.global.reverseVertical)
-                }
-                HStack {
-                    Toggle("水平平滑", isOn: $prefs.global.smoothHorizontal)
-                    Toggle("水平反向", isOn: $prefs.global.reverseHorizontal)
-                }
-            }
-            Section("临时透传") {
-                ModifierBypassRow(
-                    title: "按住以下键时不接管滚动",
-                    mask: Binding(get: { prefs.global.bypassModifiers },
-                                 set: { prefs.global.bypassModifiers = $0 })
-                )
-                Text("做精细操作（PR / 时间线 / 表格）时，按住 ⌥ 之类即可临时回到原生逐格滚动。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            Section("按住加速") {
-                ModifierBypassRow(
-                    title: "按住以下键时滚得更远",
-                    mask: Binding(get: { prefs.global.boostModifiers },
-                                 set: { prefs.global.boostModifiers = $0 })
-                )
-                // 上限必须取 ScrollBoost.maxScale：此前滑条写死 1.2...6，而引擎夹到 10，
-                // 于是滑条拖到底只到 6×，手改 JSON 到 8× 时界面显示 6.0 实际跑 8.0（读写不一致）。
-                LabeledSlider(title: "加速倍数", value: $prefs.global.boostFactor,
-                              range: 1.2...ScrollBoost.maxScale, unit: "×",
-                              help: "按住上面的键时，距离倍率再乘这个数；松开立刻恢复")
-                Text("滚长文档 / 长网页时按住加速键，平时仍保持温和手感。")
-                if ScrollBoost.conflicts(bypass: prefs.global.bypassModifiers,
-                                         boost: prefs.global.boostModifiers) {
-                    // 配了同一个键：引擎里 bypass 先判，加速永远不会触发。
-                    // 之前只有一句静态文案「以透传为准」，用户配完根本不知道自己白配了。
-                    Label("加速键与上面的「按住透传」重复，加速不会生效（同一键时透传优先）。"
-                          + "请给其中一项换个键。", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                }
-            }
-            Section("预设") {
-                HStack {
-                    ForEach(Array(ScrollProfile.presets.keys.sorted()), id: \.self) { name in
-                        Button(name) {
-                            // 保留用户自己配的加速键：预设只覆盖曲线参数
-                            if let p = ScrollProfile.preset(named: name,
-                                                            preservingBoostFrom: prefs.global) {
-                                prefs.global = p
-                            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    Button {
+                        switch index {
+                        case 0: onPermission()
+                        case 1: onTakeover()
+                        case 2: onDevice()
+                        default: onApp()
                         }
+                    } label: {
+                        HStack(alignment: .top, spacing: 7) {
+                            Circle()
+                                .fill(color(item.level))
+                                .frame(width: 8, height: 8)
+                                .padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Text(item.value)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(color(item.level).opacity(0.08))
+                        )
                     }
-                    Spacer()
-                    Button("恢复默认") { prefs.resetGlobal() }
+                    .buttonStyle(.plain)
                 }
-            }
-            Section("开机") {
-                LaunchToggle()
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private func color(_ level: HealthLevel) -> Color {
+        switch level {
+        case .ok: return .green
+        case .warn: return .orange
+        case .fail: return .red
+        }
+    }
+}
+
+struct GeneralTab: View {
+    @EnvironmentObject var prefs: Preferences
+    @EnvironmentObject var active: ActiveAppInfo
+    @EnvironmentObject var monitor: Monitor
+    @Environment(\.layoutColumns) private var columns
+    @ObservedObject private var pointer = PointerController.shared
+    @AppStorage("smoose.advancedSettings") private var advancedSettings = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HealthStrip(
+                snapshot: healthSnapshot,
+                onPermission: { NavState.shared.selectedTab = SettingsTab.about.rawValue },
+                onTakeover: {
+                    NavState.shared.selectedTab = prefs.masterEnabled
+                        ? SettingsTab.scroll.rawValue : SettingsTab.about.rawValue
+                },
+                onDevice: { NavState.shared.selectedTab = SettingsTab.pointer.rawValue },
+                onApp: {
+                    if let id = active.bundleID { NavState.shared.focusAppID = id }
+                    NavState.shared.selectedTab = SettingsTab.apps.rawValue
+                }
+            )
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+
+            ResponsiveForm(columns: columns) {
+                Section("查看方式") {
+                    Picker("设置模式", selection: $advancedSettings) {
+                        Text("简易").tag(false)
+                        Text("高级").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    Text("简易模式只显示常用参数；曲线、轴向和临时透传等细节在高级模式。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Section("全局") {
+                    Toggle("启用平滑滚动", isOn: $prefs.masterEnabled)
+                        .smooseHelp(.masterEnabled)
+                    Toggle("忽略触控板 / Magic Mouse（推荐）", isOn: $prefs.ignoreTrackpad)
+                        .smooseHelp(.ignoreTrackpad)
+                }
+                Section("输出方式") {
+                    Toggle("模拟触控板滚动（推荐）", isOn: $prefs.global.simulateTrackpad)
+                        .smooseHelp(.simulateTrackpad)
+                    Text("把平滑后的滚动标记成触控板滚动（带开始 / 结束 / 惯性相位），Chrome、Safari 等会直接采用上面调好的曲线，不再二次加工；个别 App 表现异常时关掉即可，关掉后完全回到旧的「滚轮 + 像素」行为。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Section("常用曲线") {
+                    LabeledSlider(title: "距离倍率", value: $prefs.global.speed, range: 0.2...8, unit: "×",
+                                  help: .speed)
+                    LabeledSlider(title: "顺滑度", value: $prefs.global.smoothness, range: 0...1, unit: "",
+                                  help: .smoothness)
+                }
+                if advancedSettings {
+                    Section("高级曲线") {
+                        LabeledSlider(title: "滚轮行数", value: $prefs.global.wheelLines, range: 0.2...5, unit: " 行",
+                                      help: .wheelLines)
+                        LabeledSlider(title: "最小步长", value: $prefs.global.minStep, range: 0...30, unit: "px",
+                                      help: .minStep)
+                        ScrollCurvePreview(profile: prefs.global)
+                            .smooseHelp(.curvePreview)
+                    }
+                }
+            } col1: {
+                if advancedSettings {
+                    Section("轴向与方向") {
+                        HStack {
+                            Toggle("垂直平滑", isOn: $prefs.global.smoothVertical)
+                                .smooseHelp(.smoothVertical)
+                            Toggle("垂直反向", isOn: $prefs.global.reverseVertical)
+                                .smooseHelp(.reverseVertical)
+                        }
+                        HStack {
+                            Toggle("水平平滑", isOn: $prefs.global.smoothHorizontal)
+                                .smooseHelp(.smoothHorizontal)
+                            Toggle("水平反向", isOn: $prefs.global.reverseHorizontal)
+                                .smooseHelp(.reverseHorizontal)
+                        }
+                        LabeledSlider(title: "斜向锁定", value: $prefs.global.axisLockThreshold,
+                                      range: 0...0.9, unit: "", help: .axisLockThreshold)
+                        Text("0 = 关闭；例如 0.2 表示较小轴不足较大轴的 20% 时丢弃该轴，抑制横向抖动。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Section("临时透传") {
+                        ModifierBypassRow(
+                            title: "按住以下键时不接管滚动",
+                            mask: Binding(get: { prefs.global.bypassModifiers },
+                                         set: { prefs.global.bypassModifiers = $0 }),
+                            help: .bypassModifiers
+                        )
+                        Text("做精细操作（PR / 时间线 / 表格）时，按住 ⌥ 之类即可临时回到原生逐格滚动。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } col2: {
+                if advancedSettings {
+                    Section("按住加速") {
+                        ModifierBypassRow(
+                            title: "按住以下键时滚得更远",
+                            mask: Binding(get: { prefs.global.boostModifiers },
+                                         set: { prefs.global.boostModifiers = $0 }),
+                            help: .boostModifiers
+                        )
+                        LabeledSlider(title: "加速倍数", value: $prefs.global.boostFactor,
+                                      range: 1.2...ScrollBoost.maxScale, unit: "×",
+                                      help: .boostFactor)
+                        Text("滚长文档 / 长网页时按住加速键，平时仍保持温和手感。")
+                        if ScrollBoost.conflicts(bypass: prefs.global.bypassModifiers,
+                                                 boost: prefs.global.boostModifiers) {
+                            Label("加速键与上面的「按住透传」重复，加速不会生效（同一键时透传优先）。"
+                                  + "请给其中一项换个键。", systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                Section("预设") {
+                    // 一行放不下时自动换行成多行（LazyVGrid 自适应列宽），而不是把按钮文字截断成「原...」。
+                    // 每列最小 84pt，足以容纳最宽的「原生 App / 跳过此 App」；放得下就一行、放不下就折行。
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 84, maximum: 120), spacing: 8)], spacing: 8) {
+                        ForEach(Array(ScrollProfile.presets.keys.sorted()), id: \.self) { name in
+                            Button {
+                                if let p = ScrollProfile.preset(named: name,
+                                                                preservingBoostFrom: prefs.global) {
+                                    prefs.global = p
+                                }
+                            } label: {
+                                Text(name)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        Button("恢复默认") { prefs.resetGlobal() }
+                            .frame(maxWidth: .infinity)
+                            .smooseHelp(.presets)
+                    }
+                }
+                Section("开机") {
+                    LaunchToggle()
+                        .smooseHelp(.launchAtLogin)
+                }
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var healthSnapshot: HealthSnapshot {
+        HealthSnapshot(
+            version: Updater.currentVersion,
+            trusted: ScrollEngine.trusted(prompt: false),
+            tapRunning: ScrollEngine.shared.isTapRunning,
+            masterEnabled: prefs.masterEnabled,
+            activeAppName: active.lastExternalName ?? active.name,
+            activeAppBundle: active.lastExternalBundleID ?? active.bundleID,
+            activeAppHasRule: (active.lastExternalBundleID ?? active.bundleID).map { prefs.apps[$0] != nil } ?? false,
+            pointerDeviceCount: pointer.devices.count,
+            lastSource: monitor.sourceName,
+            echoGuardCount: ScrollEngine.shared.echoGuardCount
+        )
     }
 }
 
@@ -445,6 +673,7 @@ struct AppRulesTab: View {
     @EnvironmentObject var active: ActiveAppInfo
     @State private var selection = ""
     @State private var showingAdd = false
+    @AppStorage("smoose.newAppPreset") private var newAppPreset = "自动识别"
 
     private var sortedKeys: [String] { prefs.apps.keys.sorted() }
 
@@ -460,23 +689,33 @@ struct AppRulesTab: View {
                 Text("按 App 单独设置滚动手感。留空的 App 沿用全局配置。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
+                Text("新增预设").font(.system(size: 11)).foregroundStyle(.secondary)
+                Picker("", selection: $newAppPreset) {
+                    Text("自动识别").tag("自动识别")
+                    ForEach(Array(ScrollProfile.presets.keys.sorted()), id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 132)
                 Menu {
                     ForEach(candidates, id: \.processIdentifier) { app in
                         Button(app.localizedName ?? app.bundleIdentifier ?? "?") {
                             if let id = app.bundleIdentifier, prefs.apps[id] == nil {
-                                // 微信 / QQ / Slack 这类自带滚动惯性的 App：直接用「聊天软件」预设，
-                                // 不再「沿用全局」—— 用户 2026-10-31 反馈在微信里全局倍率叠上去会过快。
-                                prefs.apps[id] = ScrollProfile.suggested(forBundleID: id) ?? prefs.global
+                                prefs.apps[id] = profileForNewApp(id: id)
                             }
                         }
                     }
                     Divider()
-                    Button("当前前台应用：\(active.name ?? "无")") {
-                        if let id = active.bundleID, prefs.apps[id] == nil {
-                            prefs.apps[id] = ScrollProfile.suggested(forBundleID: id) ?? prefs.global
+                    Button("当前前台应用：\(active.lastExternalName ?? active.name ?? "无")") {
+                        if let id = active.lastExternalBundleID ?? active.bundleID, prefs.apps[id] == nil {
+                            prefs.apps[id] = profileForNewApp(id: id)
                         }
                     }
                 } label: { Label("添加应用", systemImage: "plus") }
+                .smooseHelp(.addAppRule)
             }
 
             List {
@@ -498,6 +737,28 @@ struct AppRulesTab: View {
         Binding(get: { prefs.apps[id] ?? prefs.global },
                 set: { prefs.apps[id] = $0 })
     }
+
+    /// 新增规则的唯一入口：自动识别只对保守白名单生效；手动预设覆盖自动结果。
+    private func profileForNewApp(id: String) -> ScrollProfile {
+        if newAppPreset == "自动识别" {
+            guard let suggested = ScrollProfile.suggested(forBundleID: id) else {
+                return prefs.global
+            }
+            return preservingGlobalOutput(suggested)
+        }
+        return ScrollProfile.preset(named: newAppPreset, preservingBoostFrom: prefs.global)
+            ?? prefs.global
+    }
+
+    /// 自动模板只改曲线参数；输出方式、斜向锁定和加速键属于用户的全局策略，新增 App 时不能被模板重置。
+    private func preservingGlobalOutput(_ profile: ScrollProfile) -> ScrollProfile {
+        var p = profile
+        p.boostModifiers = prefs.global.boostModifiers
+        p.boostFactor = prefs.global.boostFactor
+        p.simulateTrackpad = prefs.global.simulateTrackpad
+        p.axisLockThreshold = prefs.global.axisLockThreshold
+        return p
+    }
 }
 
 struct AppRuleRow: View {
@@ -516,6 +777,7 @@ struct AppRuleRow: View {
                 Text(displayName).font(.system(size: 12, weight: .medium))
                 Spacer()
                 Toggle("接管", isOn: $profile.enabled)
+                    .smooseHelp(.appRuleEnabled)
                     .labelsHidden()
                 Button {
                     prefs.apps.removeValue(forKey: id)
@@ -523,28 +785,56 @@ struct AppRuleRow: View {
                 .buttonStyle(.plain)
             }
             // 常用两个参数直接可见，不用展开「细节参数」
-            LabeledSlider(title: "距离倍率", value: $profile.speed, range: 0.2...8, unit: "×")
+            LabeledSlider(title: "距离倍率", value: $profile.speed, range: 0.2...8, unit: "×",
+                            help: .appRuleSpeed)
                 .disabled(!profile.enabled)
-            LabeledSlider(title: "顺滑度", value: $profile.smoothness, range: 0...1, unit: "")
+            LabeledSlider(title: "顺滑度", value: $profile.smoothness, range: 0...1, unit: "",
+                            help: .appRuleSmoothness)
                 .disabled(!profile.enabled)
+            Menu("套用预设模板") {
+                Button("从全局复制") {
+                    profile = prefs.global
+                }
+                Divider()
+                ForEach(Array(ScrollProfile.presets.keys.sorted()), id: \.self) { name in
+                    Button(name) {
+                        if let p = ScrollProfile.preset(named: name, preservingBoostFrom: profile) {
+                            profile = p
+                        }
+                    }
+                }
+            }
+            .font(.system(size: 11))
             DisclosureGroup("细节参数", isExpanded: $expanded) {
-                LabeledSlider(title: "距离倍率", value: $profile.speed, range: 0.2...8, unit: "×")
-                LabeledSlider(title: "滚轮行数", value: $profile.wheelLines, range: 0.2...5, unit: " 行")
-                LabeledSlider(title: "顺滑度", value: $profile.smoothness, range: 0...1, unit: "")
-                LabeledSlider(title: "最小步长", value: $profile.minStep, range: 0...30, unit: "px")
+                LabeledSlider(title: "距离倍率", value: $profile.speed, range: 0.2...8, unit: "×",
+                            help: .appRuleSpeed)
+                LabeledSlider(title: "滚轮行数", value: $profile.wheelLines, range: 0.2...5, unit: " 行",
+                            help: .appRuleWheelLines)
+                LabeledSlider(title: "顺滑度", value: $profile.smoothness, range: 0...1, unit: "",
+                            help: .appRuleSmoothness)
+                LabeledSlider(title: "最小步长", value: $profile.minStep, range: 0...30, unit: "px",
+                            help: .appRuleMinStep)
+                LabeledSlider(title: "斜向锁定", value: $profile.axisLockThreshold,
+                              range: 0...0.9, unit: "", help: .appRuleAxisLockThreshold)
                 HStack {
                     Toggle("垂直平滑", isOn: $profile.smoothVertical)
+                        .smooseHelp(.appRuleSmoothVertical)
                     Toggle("水平平滑", isOn: $profile.smoothHorizontal)
+                        .smooseHelp(.appRuleSmoothHorizontal)
                 }
                 HStack {
                     Toggle("垂直反向", isOn: $profile.reverseVertical)
+                        .smooseHelp(.appRuleReverseVertical)
                     Toggle("水平反向", isOn: $profile.reverseHorizontal)
+                        .smooseHelp(.appRuleReverseHorizontal)
                 }
                 Toggle("模拟触控板滚动", isOn: $profile.simulateTrackpad)
+                    .smooseHelp(.appRuleSimulateTrackpad)
                     .disabled(!profile.enabled)
                 ModifierBypassRow(title: "按住时透传滚动",
                                  mask: Binding(get: { profile.bypassModifiers },
-                                              set: { profile.bypassModifiers = $0 }))
+                                              set: { profile.bypassModifiers = $0 }),
+                                 help: .appRuleBypass)
                 Divider()
                 Text("侧键绑定覆盖（留空走全局）").font(.system(size: 10)).foregroundStyle(.secondary)
                 ForEach(3...5, id: \.self) { button in
@@ -554,6 +844,7 @@ struct AppRuleRow: View {
                             Text(action.label).tag(ButtonAction?.some(action))
                         }
                     }
+                    .smooseHelp(.appRuleSideButtons)
                 }
             }
             .font(.system(size: 11))
@@ -595,23 +886,28 @@ struct AppRuleRow: View {
 
 struct ButtonsTab: View {
     @EnvironmentObject var prefs: Preferences
+    @Environment(\.layoutColumns) private var columns
     @State private var lastDetectedButton: Int?
     @State private var testMonitor: Any?
     @State private var testLocalMonitor: Any?
 
     var body: some View {
-        Form {
+        ResponsiveForm(columns: columns) {
             Section("鼠标按键") {
                 Toggle("交换后/前侧键（4 ↔ 5）", isOn: $prefs.swapBackForward)
+                    .smooseHelp(.swapBackForward)
                 Toggle("抬起时触发（默认按下触发）", isOn: $prefs.triggerOnMouseUp)
+                    .smooseHelp(.triggerOnMouseUp)
                 ForEach(3...5, id: \.self) { button in
                     Picker("按键 \(button)\(subtitle(for: button))", selection: binding(for: button)) {
                         ForEach(ButtonAction.allCases) { action in
                             Text(action.label).tag(action)
                         }
                     }
+                    .smooseHelp(.sideButton)
                 }
             }
+        } col1: {
             Section("按键测试") {
                 HStack {
                     Image(systemName: lastDetectedButton == nil ? "questionmark.circle" : "checkmark.circle.fill")
@@ -626,14 +922,13 @@ struct ButtonsTab: View {
                     }
                 }
             }
+        } col2: {
             Section {
                 Text("绑定会吞掉该按键的原生点击事件。Logitech 侧键在 HID++ 模式下可能无法识别为按钮 4/5。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
         .padding(.top, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { installMonitorIfNeeded() }
         .onDisappear {
             if let m = testMonitor {
@@ -693,18 +988,28 @@ struct ButtonsTab: View {
 ///   · 显示帧 —— ScrollEngine 的 CVDisplayLink
 /// 所以打开这个页面对 Smoose 自身零额外系统开销。
 struct GamePerfTab: View {
+    @Environment(\.layoutColumns) private var columns
     @ObservedObject private var probe = GamePerfProbe.shared
 
     var body: some View {
-        Form {
+        ResponsiveForm(columns: columns) {
             Section("设备参数（硬件实读）") {
                 if probe.devices.isEmpty {
                     Text("还没有枚举到指针设备。").font(.system(size: 11)).foregroundStyle(.secondary)
                 } else {
                     ForEach(probe.devices) { d in
+                        // 两个罗技接收器的 Product 都叫 "USB Receiver"，列表会出现两行同名。
+                        // 同名时追加 PID / USB 位置，用户才看得出这不是重复（2026-11-10）。
+                        let title = DeviceLabel.disambiguate(
+                            d.name,
+                            productID: d.productID,
+                            locationID: d.locationID,
+                            ambiguous: DeviceLabel.hasSameNameSibling(name: d.name,
+                                                                     in: probe.devices.map(\.name)))
+                            + (d.builtIn ? "（内置）" : "")
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(d.name + (d.builtIn ? "（内置）" : ""))
+                                Text(title)
                                     .font(.system(size: 12, weight: .medium))
                                 Text("\(d.transport.isEmpty ? "传输未知" : d.transport)"
                                      + " · 上报间隔 \(String(format: "%.0f", d.reportIntervalUs)) µs")
@@ -720,6 +1025,9 @@ struct GamePerfTab: View {
                 Text("回报率读自 IORegistry 的 ReportInterval，是鼠标板载配置的真实值"
                      + "（G502 X 接收器实测 1000 µs = 1000 Hz）。"
                      + "传感器 DPI 不在 IORegistry 里，改由「指针」页的 HID++ 0x2201 向设备实读。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("出现多行同名（例如两个都叫 USB Receiver）不是重复：系统给不同接收器的名字相同，"
+                     + "只有 PID / USB 位置能区分。同名行会带上后缀，对应的是插在不同 USB 口上的不同设备。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
 
@@ -741,7 +1049,7 @@ struct GamePerfTab: View {
                 metricRow("侧键按下时长", probe.sideButtonMs > 0 ? ms(probe.sideButtonMs) : "—",
                           sub: "只统计侧键 4/5，左右主键不经过事件拦截")
             }
-
+        } col1: {
             Section("就绪度") {
                 HStack(spacing: 10) {
                     Image(systemName: probe.sampling ? "hourglass" : probe.readiness.symbol)
@@ -767,7 +1075,7 @@ struct GamePerfTab: View {
                     }
                 }
             }
-
+        } col2: {
             Section("建议") {
                 ForEach(Array(probe.advice.enumerated()), id: \.offset) { i, s in
                     Text("\(i + 1). \(s)")
@@ -777,8 +1085,6 @@ struct GamePerfTab: View {
                 Button("重置统计") { probe.reset() }
             }
         }
-        .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func ms(_ v: Double) -> String { v > 0 ? String(format: "%.2f ms", v) : "—" }
@@ -819,11 +1125,14 @@ struct GamePerfTab: View {
 
 struct AboutTab: View {
     @EnvironmentObject var prefs: Preferences
+    @EnvironmentObject var active: ActiveAppInfo
     @EnvironmentObject var monitor: Monitor
     @ObservedObject private var updater = Updater.shared
+    @ObservedObject private var pointer = PointerController.shared
     @State private var trusted = ScrollEngine.trusted(prompt: false)
     @State private var feedDraft: String = ""
     @State private var feedSaved = false
+    @State private var diagnosticsCopied = false
 
     var body: some View {
         VStack(alignment: .center, spacing: 14) {
@@ -844,19 +1153,31 @@ struct AboutTab: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("诊断").font(.headline)
                     Text("辅助功能权限：\(trusted ? "已授权" : "未授权")")
+                    Text("事件 tap：\(ScrollEngine.shared.isTapRunning ? "运行中" : "未运行")")
+                    Text("指针设备：\(pointer.devices.count) 台")
                     Text("回环拦截计数：\(ScrollEngine.shared.echoGuardCount)")
                     Text("最近 Δ：\(String(format: "%.1f", monitor.rawDelta)) · \(monitor.sourceName)")
                 }
                 .font(.system(size: 11))
                 VStack(spacing: 6) {
+                    Button(diagnosticsCopied ? "已复制诊断报告" : "复制诊断报告") {
+                        copyDiagnostics()
+                    }
+                    .controlSize(.small)
                     Button("请求/检查权限") {
                         _ = ScrollEngine.trusted(prompt: true)
                         trusted = ScrollEngine.trusted(prompt: false)
                     }
+                    .smooseHelp(.requestPermission)
+                    Button("重新检测") {
+                        recheckSystem()
+                    }
+                    .controlSize(.small)
                     Button("重置全部设置") {
                         UserDefaults.standard.removeObject(forKey: "smoose.state")
                         prefs.load()
                     }
+                    .smooseHelp(.resetAllSettings)
                 }
             }
 
@@ -900,6 +1221,7 @@ struct AboutTab: View {
                 }
                 .font(.system(size: 11))
                 Toggle("每天自动检查一次更新", isOn: $prefs.autoCheckUpdates)
+                    .smooseHelp(.autoCheckUpdates)
                     .font(.system(size: 11))
                     .toggleStyle(.switch)
 
@@ -954,6 +1276,40 @@ struct AboutTab: View {
                 feedDraft = updater.feedURLString
             }
         }
+    }
+
+    private var healthSnapshot: HealthSnapshot {
+        HealthSnapshot(
+            version: Updater.currentVersion,
+            trusted: ScrollEngine.trusted(prompt: false),
+            tapRunning: ScrollEngine.shared.isTapRunning,
+            masterEnabled: prefs.masterEnabled,
+            activeAppName: active.lastExternalName ?? active.name,
+            activeAppBundle: active.lastExternalBundleID ?? active.bundleID,
+            activeAppHasRule: (active.lastExternalBundleID ?? active.bundleID).map { prefs.apps[$0] != nil } ?? false,
+            pointerDeviceCount: pointer.devices.count,
+            lastSource: monitor.sourceName,
+            echoGuardCount: ScrollEngine.shared.echoGuardCount
+        )
+    }
+
+    private func copyDiagnostics() {
+        let report = HealthStatus.report(healthSnapshot)
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(report, forType: .string)
+        diagnosticsCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            diagnosticsCopied = false
+        }
+    }
+
+    private func recheckSystem() {
+        trusted = ScrollEngine.trusted(prompt: false)
+        ScrollEngine.shared.revalidateTap()
+        PointerController.shared.refresh(force: true)
+        LogitechHIDPP.shared.refresh()
+        diagnosticsCopied = false
     }
 }
 
@@ -1037,11 +1393,30 @@ struct UpdateStatusView: View {
 
 struct PointerTab: View {
     @EnvironmentObject var prefs: Preferences
+    @Environment(\.layoutColumns) private var columns
     @ObservedObject private var controller = PointerController.shared
+    /// 会话同步的调度与结果放在单例里：切标签页 / 关设置窗也不打断自动重载。
+    @ObservedObject private var zoomSync = CursorZoomSessionSync.shared
 
     /// 光标放大：写入结果与「打开系统设置」的失败都必须可见，不能静默。
     @State private var zoomResult: CursorZoomApplyResult?
     @State private var zoomLaunchFailure: String?
+    /// 「进入设置页时读回的系统真实偏好值」，与 prefs 里的缓存分开显示，
+    /// 避免「开关显示关、实物还在放大」的假绿。同步结果改由 zoomSync 发布。
+    @State private var zoomSystemEnabled: Bool?
+
+    private var zoomLedgerDisplay: CursorZoomAutoSyncPolicy.LedgerDisplay {
+        CursorZoomAutoSyncPolicy.display(
+            ledgerEnabled: zoomSync.ledgerEnabled,
+            desired: prefs.cursorZoomEnabled)
+    }
+
+    private var zoomTimeText: String {
+        guard let at = zoomSync.ledgerAt else { return "" }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: at))
+    }
 
     /// 自定义 Binding：只有写后读回校验通过才更新 prefs。
     /// 失败时不写 prefs，Toggle 读 get 会自动回弹，且不会再触发一次写入
@@ -1058,6 +1433,24 @@ struct PointerTab: View {
         zoomResult = result
         if result.ok { prefs.cursorZoomEnabled = enabled }
         // 失败：不写 prefs → 开关回弹；红字给出具体原因与重试提示。
+        // 写盘成功就安排自动重载（防抖在单例里）；失败绝不触发，
+        // 否则会把系统设置拨到没有用户意图的方向。
+        if CursorZoomAutoSyncPolicy.shouldTrigger(writeOK: result.ok) {
+            zoomSync.scheduleAuto(desiredEnabled: enabled)
+        }
+    }
+
+    /// 每次进入指针页都从 cfprefsd 读回系统真实偏好值，只用于「显示」。
+    /// 绝不回写 prefs：旧实现用系统值覆盖用户刚选的开关，用户点「开启」后切页/重进
+    /// 就被改回「关」，看起来就是「打开了却不生效」。差异另行提示，让用户主动追平。
+    private func syncZoomFromSystem() {
+        zoomSystemEnabled = CursorZoomController.shared.systemEnabled
+        zoomSync.reloadLedger()
+    }
+
+    /// 手动触发（重试 / 用户主动点按钮）：与自动路径共用同一个 apply 与四条硬门槛。
+    private func applyZoomThisSession() {
+        zoomSync.runNow(desiredEnabled: prefs.cursorZoomEnabled)
     }
 
     private func openDisplaySettings() {
@@ -1084,11 +1477,12 @@ struct PointerTab: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Form {
+            ResponsiveForm(columns: columns) {
                 Section("指针加速度") {
                     Toggle("接管并提供线性追踪（关掉 macOS 的加速曲线）", isOn: $prefs.pointerAccelManaged)
+                        .smooseHelp(.pointerAccelManaged)
                     LabeledSlider(title: "加速度数值", value: $prefs.pointerAccelerationValue, range: 0...6, unit: "",
-                                  help: "0 = 严格线性：写 -1 并启用 Sonoma+ 线性缩放（1:1，等同 Windows/Linux）；只把数值写成 0 并不会关闭加速曲线。系统默认约 2.5")
+                                  help: .pointerAccelerationValue)
                     .disabled(!prefs.pointerAccelManaged)
                     HStack {
                         Button("取 0（线性）") { prefs.pointerAccelerationValue = 0 }
@@ -1102,24 +1496,59 @@ struct PointerTab: View {
                 }
                 Section("光标放大") {
                     Toggle("快速移动鼠标时放大光标图标", isOn: cursorZoomBinding)
+                        .smooseHelp(.cursorZoomEnabled)
+                    // 系统偏好值与「本次会话是否生效」分开写，不能混成一个开关状态。
+                    if let zoomSystemEnabled {
+                        Text("系统偏好：\(zoomSystemEnabled ? "开启" : "已关闭")（进入本页时从系统读回）")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        if zoomSystemEnabled != prefs.cursorZoomEnabled {
+                            Text("系统偏好与当前开关不一致：点「立即生效」让系统按开关状态追平。")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if let sync = zoomSync.lastResult {
+                        Text(sync.message)
+                            .font(.system(size: 10))
+                            .foregroundStyle(sync.ok ? Color.green : Color.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        // 不写「尚未重载」：那是 App 丢了记录，不是系统状态回退。
+                        Text(CursorZoomAutoSyncPolicy.ledgerMessage(zoomLedgerDisplay, timeText: zoomTimeText))
+                            .font(.system(size: 10))
+                            .foregroundStyle(
+                                zoomLedgerDisplay == .upToDate(enabled: prefs.cursorZoomEnabled)
+                                    ? Color.secondary : Color.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !zoomSync.ledgerWriteOk {
+                        Text("重载记录未能保存：只影响重启后的状态提示，不影响本次重载结果。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let zoomResult {
                         Text(CursorZoomPolicy.statusMessage(zoomResult))
                             .font(.system(size: 10))
                             .foregroundStyle(zoomResult.ok ? Color.secondary : Color.red)
                             .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        // 常驻说明：避免「开关是蓝的」被误读成功能已即时生效。
-                        Text("当前显示的是系统偏好值。修改后需重新登录才生效；下方按钮可到系统设置里立即应用一次。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                     HStack(spacing: 8) {
-                        Button("在系统设置里打开") { openDisplaySettings() }
+                        Button("立即生效（无需注销）") { applyZoomThisSession() }
+                            .smooseHelp(.zoomApplyNow)
                             .font(.system(size: 11))
-                        if zoomLaunchFailure != nil {
-                            Button("重试") { openDisplaySettings() }
-                                .controlSize(.small)
+                        Button("在系统设置里打开") { openDisplaySettings() }
+                            .smooseHelp(.zoomOpenSystemSettings)
+                            .font(.system(size: 11))
+                        if zoomLaunchFailure != nil
+                            || (zoomSync.lastResult != nil && !zoomSync.lastResult!.ok) {
+                            Button("重试") {
+                                applyZoomThisSession()
+                                openDisplaySettings()
+                            }
+                            .controlSize(.small)
                         }
                     }
                     if let zoomLaunchFailure {
@@ -1128,11 +1557,12 @@ struct PointerTab: View {
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("即系统自带的「摇动鼠标指针以定位」：快速来回移动鼠标时，光标会膨胀放大，方便找到它。Smoose 只写入系统偏好，macOS 不会热加载它；在系统设置里把该开关关一次再打开可立即生效。")
+                    Text("即系统自带的「摇动鼠标指针以定位」。拨动开关后 Smoose 会自动用自身辅助功能权限到系统设置里，按目标状态拨动该开关并校验终态（开与关都支持），完成后回到你之前所在的应用；也可点「立即生效」手动重试。macOS 只在登录时加载该偏好，所以不重载的话运行中的会话仍可能用旧值。若授权被系统收回，请在 系统设置 → 隐私与安全性 → 辅助功能 重新勾选 Smoose。")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            } col1: {
                 Section("设备") {
                     if controller.devices.isEmpty {
                         Text("尚未发现指针设备").foregroundStyle(.secondary).font(.system(size: 11))
@@ -1140,12 +1570,17 @@ struct PointerTab: View {
                         ForEach(controller.devices) { device in
                             PointerDeviceRow(device: device, controller: controller)
                         }
+                        Text("「滚动判定」只影响这一台设备：自动 = 按设备类型识别（触控面原样放行 / 滚轮鼠标交给平滑），识别不出来时才回落到「忽略触控板」开关。误判的第三方设备在这里单独改成「滚轮鼠标」即可，内置触控板仍受保护。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 Section("指针速度") {
                     Toggle("自定义移动速度倍率", isOn: $prefs.pointerSpeedManaged)
+                        .smooseHelp(.pointerSpeedManaged)
                     LabeledSlider(title: "速度倍率", value: $prefs.pointerSpeedFactor, range: 0.2...4, unit: "×",
-                                  help: "1.0 = 系统原速。通过重写鼠标移动增量实现，按住拖拽时保持系统原速以保证选区精度。")
+                                  help: .pointerSpeedFactor)
                     .disabled(!prefs.pointerSpeedManaged)
                     HStack {
                         Button("取 1.0（原速）") { prefs.pointerSpeedFactor = 1.0 }
@@ -1159,6 +1594,7 @@ struct PointerTab: View {
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            } col2: {
                 Section("状态") {
                     Text(controller.appliedDescription)
                         .font(.system(size: 11, design: .monospaced))
@@ -1170,19 +1606,24 @@ struct PointerTab: View {
                     LogitechSectionView()
                 }
             }
-            .formStyle(.grouped)
 
             HStack {
                 Button("重新检测") { controller.refresh(force: true) }
+                    .smooseHelp(.pointerRefresh)
                 Button("恢复系统默认") {
                     prefs.pointerAccelManaged = false
                     controller.restoreDefaults()
                     controller.refresh(force: true)
                 }
+                .smooseHelp(.pointerRestoreDefaults)
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // 每次指针页出现都从系统读回真实偏好值，消除「本地缓存显示关」的假绿。
+        .onAppear { syncZoomFromSystem() }
+        // 自动 / 手动同步结束后都重新读回系统偏好，避免显示停留在拨动前的值。
+        .onChange(of: zoomSync.lastResult) { _, _ in syncZoomFromSystem() }
     }
 }
 
@@ -1230,6 +1671,7 @@ struct LogitechSectionView: View {
                                 Text("\(dpi) DPI").tag(dpi)
                             }
                         }
+                        .smooseHelp(.logiDPI)
                         .pickerStyle(.menu)
                         .onAppear { if logi.currentDPI > 0 { selectedDPI = logi.currentDPI } }
                         .onChange(of: logi.currentDPI) { _, v in if v > 0 { selectedDPI = v } }
@@ -1259,13 +1701,32 @@ struct LogitechSectionView: View {
 struct PointerDeviceRow: View {
     let device: PointerController.MouseDevice
     @ObservedObject var controller: PointerController
+    @ObservedObject private var prefs = Preferences.shared
+    /// 订阅设备表：否则「自动识别为」会停在窗口打开那一刻，插拔后也不再更新。
+    @ObservedObject private var attribution = DeviceAttribution.shared
+
+    /// 与 DeviceAttribution 用的持久键保持一致（builtin / pid@loc / pid@name）。
+    private var deviceKey: String {
+        DeviceKey.make(builtIn: device.builtIn,
+                       productID: device.productID,
+                       locationID: device.locationID,
+                       product: device.name)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Image(systemName: device.builtIn ? "laptopcomputer" : "computermouse")
                     .foregroundStyle(.secondary)
-                Text(device.name).font(.system(size: 12, weight: .medium))
+                // 同名设备（两个罗技接收器的 Product 都是 "USB Receiver"）追加 PID / USB 位置，
+                // 否则用户会以为列表重复了、也不知道接管覆盖了哪几台（2026-11-10）。
+                Text(DeviceLabel.disambiguate(
+                        device.name,
+                        productID: device.productID,
+                        locationID: device.locationID,
+                        ambiguous: DeviceLabel.hasSameNameSibling(
+                            name: device.name, in: controller.devices.map(\.name))))
+                    .font(.system(size: 12, weight: .medium))
                 if device.builtIn {
                     Text("内置").font(.system(size: 9)).padding(.horizontal, 4).padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.15)).cornerRadius(3)
@@ -1282,8 +1743,31 @@ struct PointerDeviceRow: View {
                 + " · 分辨率 \(Int(res / 65536))（只读）")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
+            // 设备级滚动判定（v1.5.0）：只纠正这一台，不动其它设备，
+            // 也不再把「忽略触控板」当全局开关一刀切。
+            HStack(spacing: 6) {
+                Text("滚动判定").font(.system(size: 10)).foregroundStyle(.secondary)
+                Picker("滚动判定", selection: Binding(
+                    get: { prefs.deviceVerdicts[deviceKey] ?? .auto },
+                    set: { v in
+                        if v == .auto { prefs.deviceVerdicts.removeValue(forKey: deviceKey) }
+                        else { prefs.deviceVerdicts[deviceKey] = v }
+                    })) {
+                    ForEach(DeviceVerdict.allCases, id: \.self) { v in
+                        Text(v.label).tag(v)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .fixedSize()
+                Text("自动识别为：\(attribution.devices.first { $0.key == deviceKey }?.capability.label ?? "未探明")")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.vertical, 2)
+        .smooseHelp(.deviceRow)
     }
 }
 
@@ -1292,6 +1776,7 @@ struct PointerDeviceRow: View {
 struct ModifierBypassRow: View {
     let title: String
     @Binding var mask: UInt64
+    var help: HelpKey? = nil
 
     private static let options: [(String, UInt64)] = [
         ("⌘", CGEventFlags.maskCommand.rawValue),
@@ -1315,8 +1800,10 @@ struct ModifierBypassRow: View {
                 Spacer()
                 Button("清除") { mask = 0 }
                     .font(.system(size: 10))
+                    .smooseHelp(.bypassModifiers)
             }
         }
+        .smooseHelp(help)
     }
 }
 
@@ -1417,7 +1904,9 @@ struct LabeledSlider: View {
     @Binding var value: Double
     var range: ClosedRange<Double>
     var unit: String = ""
-    var help: String? = nil
+    /// 有解释时：滑条下方常驻一行小字，同时整行挂悬停气泡。
+    /// 常驻小字在窗口变窄或字号变大时会被压缩，悬停那条路不占布局。
+    var help: HelpKey? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -1430,9 +1919,10 @@ struct LabeledSlider: View {
             }
             Slider(value: $value, in: range)
             if let help {
-                Text(help).font(.system(size: 10)).foregroundStyle(.tertiary)
+                Text(HelpText.text(help)).font(.system(size: 10)).foregroundStyle(.tertiary)
             }
         }
+        .smooseHelp(help)
     }
 }
 

@@ -102,13 +102,26 @@ struct UpdateManifest: Decodable, Equatable {
         var browserDownloadURL: String?
         var name: String?
         var contentType: String?
+        /// GitHub 把 asset 的校验和放在这里，形如 "sha256:0db3..."。
+        /// 以前只在顶层找 digest，官方 Release 的 sha256 因此恒为空、校验形同虚设。
+        var digest: String?
         // 必须有 CodingKeys：GitHub 发的是 snake_case（browser_download_url / content_type），
         // 而合成解码默认按属性名 camelCase 去找。少了这个映射，name 因为两种拼写相同还能解出来，
         // 但下载地址和 content_type 会静默变成 nil —— 结果是「发现了新版却下载不到安装包」
         // （2026-10-22 端到端实测：真 feed 解出 version=1.2.0 但 url=nil）。
         private enum CodingKeys: String, CodingKey {
-            case browserDownloadURL = "browser_download_url", name, contentType = "content_type"
+            case browserDownloadURL = "browser_download_url", name, contentType = "content_type", digest
         }
+    }
+
+    /// 只认 sha256 前缀：别的算法不能拿来当 sha256 比，
+    /// 否则会拿一个真值去对错误摘要，结果是永远拒装。
+    static func assetDigestSHA256(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard s.hasPrefix("sha256:") else { return nil }
+        let hex = String(s.dropFirst("sha256:".count))
+        return hex.isEmpty ? nil : hex
     }
 
     private static func looksLikeArchive(_ s: String?) -> Bool {
@@ -153,12 +166,18 @@ struct UpdateManifest: Decodable, Equatable {
         // 以安装包结尾时才敢直接用；否则必须走 assets 里的 browser_download_url。
         let direct = try (c.decodeIfPresent(String.self, forKey: .url)
             ?? c.decodeIfPresent(String.self, forKey: .downloadURL))
+        let chosen = assets.first(where: { Self.looksLikeArchive($0.name) || Self.looksLikeArchive($0.contentType) })
         if let direct, Self.looksLikeArchive(direct) {
             url = direct
-        } else if let asset = assets.first(where: { Self.looksLikeArchive($0.name) || Self.looksLikeArchive($0.contentType) }) {
+        } else if let asset = chosen {
             url = asset.browserDownloadURL
         } else {
             url = nil
+        }
+        // 官方 GitHub Release 把 sha256 放在 assets[].digest；自建清单才放顶层。
+        // 顶层显式给的优先，没有就回落到被选中那个 asset 的 digest。
+        if sha256 == nil {
+            sha256 = Self.assetDigestSHA256(chosen?.digest)
         }
     }
 }
@@ -194,5 +213,30 @@ enum UpdateCheck {
             return .systemTooOld(manifest, required: min)
         }
         return new > cur ? .available(manifest) : .upToDate
+    }
+}
+
+// MARK: - 安装包版本与版本源声明绑定（2026-11-10）
+
+/// 只判 `new > cur` 挡不住「版本源声明 9.9.9、却指向一个合法签名的旧包」：
+/// 旧包确实是官方签的，codesign / TeamID 全过，用户会被静默降级。
+/// 所以解压后必须拿包内 Info.plist 的真实版本与清单声明比对，不一致就拒装。
+enum UpdatePackageVersionCheck {
+    enum Verdict: Equatable {
+        case match
+        /// 包里读不到 / 解析不了版本号
+        case missing
+        case mismatch(declared: String, actual: String)
+    }
+
+    /// 两边都按 SemVer 归一化："1.4.6" / "v1.4.6" / "1.4.6.0" 视为同一个版本。
+    /// 声明版本本身解析不了也算 missing —— 不能拿一个不可信的声明去放行。
+    static func verdict(declared: String, bundleVersion: String?) -> Verdict {
+        guard let bundleVersion,
+              let actual = SemVer(string: bundleVersion),
+              let wanted = SemVer(string: declared) else { return .missing }
+        return actual == wanted
+            ? .match
+            : .mismatch(declared: wanted.string, actual: actual.string)
     }
 }

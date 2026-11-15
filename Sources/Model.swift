@@ -24,6 +24,9 @@ struct ScrollProfile: Codable, Equatable {
     var smoothness: Double = 0.45
     /// 最小步长（px）：抹平极小 delta，避免「卡住不动」
     var minStep: Double = 6.0
+    /// 斜向锁定阈值：较小轴 / 较大轴低于它时丢弃较小轴；0 = 关闭。
+    /// 只影响事件分解，不改变总滚动距离。
+    var axisLockThreshold: Double = 0.0
     /// 把合成事件标记成触控板滚动（isContinuous=1 + scroll/momentum 相位）。
     /// 消费端（Chrome / Safari / 原生控件）收到后走「触控板像素滚动」路径，
     /// 只认 Smoose 给出的像素量，不再套用自己的行量化/动量二次加工曲线。
@@ -52,6 +55,7 @@ struct ScrollProfile: Codable, Equatable {
         wheelLines = try c.decodeIfPresent(Double.self, forKey: .wheelLines) ?? 1.0
         smoothness = try c.decodeIfPresent(Double.self, forKey: .smoothness) ?? 0.45
         minStep = try c.decodeIfPresent(Double.self, forKey: .minStep) ?? 6.0
+        axisLockThreshold = try c.decodeIfPresent(Double.self, forKey: .axisLockThreshold) ?? 0.0
         simulateTrackpad = try c.decodeIfPresent(Bool.self, forKey: .simulateTrackpad) ?? true
         bypassModifiers = try c.decodeIfPresent(UInt64.self, forKey: .bypassModifiers) ?? 0
         boostModifiers = try c.decodeIfPresent(UInt64.self, forKey: .boostModifiers) ?? 0
@@ -105,6 +109,8 @@ struct ScrollProfile: Codable, Equatable {
         guard var p = presets[name] else { return nil }
         p.boostModifiers = current.boostModifiers
         p.boostFactor = current.boostFactor
+        // 斜向锁定是事件过滤策略，不是曲线参数：用户专门调过就不要被预设静默清掉。
+        p.axisLockThreshold = current.axisLockThreshold
         // 「模拟触控板相位」是输出方式开关、不是曲线参数：和 boost 同一个理由，
         // 套预设时必须保留，否则特意关掉它的用户点一下预设就被悄悄打开。
         p.simulateTrackpad = current.simulateTrackpad
@@ -122,10 +128,30 @@ struct ScrollProfile: Codable, Equatable {
         "com.tinyspeck.slackmacgap",
     ]
 
+    static let browserBundleIDs: Set<String> = [
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "com.microsoft.edgemac",
+        "org.mozilla.firefox",
+        "company.thebrowser.Browser",
+        "com.brave.Browser",
+    ]
+
+    static let nativeBundleIDs: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "com.microsoft.VSCode",
+        "com.apple.dt.Xcode",
+        "dev.zed.Zed",
+    ]
+
     /// 新建每应用规则时的建议档位。返回 nil = 没有特定建议，调用方回落到「沿用全局」。
+    /// 只按 bundle id 做保守分组，不做模糊匹配：识别不出来就诚实回落，避免给未知 App 强改手感。
     static func suggested(forBundleID id: String) -> ScrollProfile? {
-        guard chatBundleIDs.contains(id) else { return nil }
-        return presets["聊天软件"]
+        if chatBundleIDs.contains(id) { return presets["聊天软件"] }
+        if browserBundleIDs.contains(id) { return presets["浏览器"] }
+        if nativeBundleIDs.contains(id) { return presets["原生 App"] }
+        return nil
     }
 }
 
@@ -169,9 +195,29 @@ enum ButtonAction: String, Codable, CaseIterable, Identifiable {
 
 // MARK: - 持久化结构
 
+/// 单台设备的滚动类型判定（v1.5.0）。
+///
+/// `.auto` 表示交给「设备能力分类 → 事件启发式」两层自动判定；
+/// 另外两档是用户对误判设备的手动纠正，只作用于该设备键，不影响其它设备。
+enum DeviceVerdict: String, Codable, CaseIterable {
+    case auto
+    case touchSurface
+    case wheelMouse
+
+    var label: String {
+        switch self {
+        case .auto: return "自动"
+        case .touchSurface: return "触控板"
+        case .wheelMouse: return "滚轮鼠标"
+        }
+    }
+}
+
 struct StoredState: Codable {
     var masterEnabled: Bool = true
     var ignoreTrackpad: Bool = true
+    /// 设备键 → 用户指定判定；缺键等价于 `.auto`。
+    var deviceVerdicts: [String: DeviceVerdict] = [:]
     var global: ScrollProfile = ScrollProfile()
     var apps: [String: ScrollProfile] = [:]
     var launchAtLogin: Bool = false
@@ -201,9 +247,11 @@ struct StoredState: Codable {
         pointerSpeedFactor: Double = 1.0, cursorZoomEnabled: Bool = false,
         autoCheckUpdates: Bool = true,
         swapBackForward: Bool = false,
-        triggerOnMouseUp: Bool = false, appBindings: [String: [String: String]] = [:]) {
+        triggerOnMouseUp: Bool = false, appBindings: [String: [String: String]] = [:],
+        deviceVerdicts: [String: DeviceVerdict] = [:]) {
         self.masterEnabled = masterEnabled
         self.ignoreTrackpad = ignoreTrackpad
+        self.deviceVerdicts = deviceVerdicts
         self.global = global
         self.apps = apps
         self.launchAtLogin = launchAtLogin
@@ -225,6 +273,7 @@ struct StoredState: Codable {
         self.init()
         masterEnabled = try c.decodeIfPresent(Bool.self, forKey: .masterEnabled) ?? true
         ignoreTrackpad = try c.decodeIfPresent(Bool.self, forKey: .ignoreTrackpad) ?? true
+        deviceVerdicts = try c.decodeIfPresent([String: DeviceVerdict].self, forKey: .deviceVerdicts) ?? [:]
         global = try c.decodeIfPresent(ScrollProfile.self, forKey: .global) ?? ScrollProfile()
         apps = try c.decodeIfPresent([String: ScrollProfile].self, forKey: .apps) ?? [:]
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
@@ -307,11 +356,64 @@ enum SettingsTab: Int, CaseIterable {
     }
 }
 
+// MARK: - 滚动配置签名（2026-11-12：无关开关不再重置滚动状态机）
+
+/// ScrollEngine.apply(_:) 会在 lock 下重置相位状态机、亚像素累积与
+/// triggerOnMouseUp 的半边按钮态，还要和 CGEvent tap 线程抢同一把锁。
+/// 只把它真正读取的字段收进签名：其余字段（光标放大、自动更新、HID 加速度…）
+/// 变化时不该付这个代价。字段全集来自 ScrollEngine.swift 的 config.* 读取点
+/// 与 StoredState.profile(for:)/bindings(for:)：
+///   masterEnabled / global / apps / bindings / appBindings /
+///   ignoreTrackpad / swapBackForward / triggerOnMouseUp /
+///   pointerSpeedManaged / pointerSpeedFactor / deviceVerdicts
+/// ⚠️ 不能复用 pointerSig：那只含 3 个 HID 加速度字段，ScrollEngine 一个都不读；
+///    拿它当门控会让滚动曲线、倍率与按键绑定整体静默失效。
+struct ScrollConfigSnapshot: Equatable {
+    let masterEnabled: Bool
+    let ignoreTrackpad: Bool
+    /// 设备级判定被 `handleWheel` 逐事件读取，改一台设备的判定必须重新 apply。
+    let deviceVerdicts: [String: DeviceVerdict]
+    let global: ScrollProfile
+    let apps: [String: ScrollProfile]
+    let bindings: [String: String]
+    let swapBackForward: Bool
+    let triggerOnMouseUp: Bool
+    let appBindings: [String: [String: String]]
+    let pointerSpeedManaged: Bool
+    let pointerSpeedFactor: Double
+}
+
+extension StoredState {
+    var scrollConfigSnapshot: ScrollConfigSnapshot {
+        ScrollConfigSnapshot(masterEnabled: masterEnabled,
+                             ignoreTrackpad: ignoreTrackpad,
+                             deviceVerdicts: deviceVerdicts,
+                             global: global,
+                             apps: apps,
+                             bindings: bindings,
+                             swapBackForward: swapBackForward,
+                             triggerOnMouseUp: triggerOnMouseUp,
+                             appBindings: appBindings,
+                             pointerSpeedManaged: pointerSpeedManaged,
+                             pointerSpeedFactor: pointerSpeedFactor)
+    }
+}
+
+enum ScrollReapplyPolicy {
+    /// 首次（previous == nil）必须 apply：启动时 config 还没有值。
+    static func needsApply(previous: ScrollConfigSnapshot?, next: ScrollConfigSnapshot) -> Bool {
+        guard let previous else { return true }
+        return previous != next
+    }
+}
+
 final class Preferences: ObservableObject {
     static let shared = Preferences()
 
     @Published var masterEnabled: Bool = true
     @Published var ignoreTrackpad: Bool = true
+    /// 设备键 → 用户指定判定（v1.5.0）。缺键 = `.auto`。
+    @Published var deviceVerdicts: [String: DeviceVerdict] = [:]
     @Published var global: ScrollProfile = ScrollProfile()
     @Published var apps: [String: ScrollProfile] = [:]
     @Published var launchAtLogin: Bool = false
@@ -356,7 +458,8 @@ final class Preferences: ObservableObject {
                     autoCheckUpdates: autoCheckUpdates,
                     swapBackForward: swapBackForward,
                     triggerOnMouseUp: triggerOnMouseUp,
-                    appBindings: appBindings)
+                    appBindings: appBindings,
+                    deviceVerdicts: deviceVerdicts)
     }
 
     func load() {
@@ -364,6 +467,7 @@ final class Preferences: ObservableObject {
               let s = try? JSONDecoder().decode(StoredState.self, from: data) else { return }
         masterEnabled = s.masterEnabled
         ignoreTrackpad = s.ignoreTrackpad
+        deviceVerdicts = s.deviceVerdicts
         global = s.global
         apps = s.apps
         launchAtLogin = s.launchAtLogin
@@ -382,7 +486,14 @@ final class Preferences: ObservableObject {
 
     func persist() {
         let s = stored
-        ScrollEngine.shared.apply(s)
+        // 只有滚动引擎真正读取的字段变了才 apply：拨「摇动放大光标」这类无关开关
+        // 不该抢 tap 线程的锁、重置相位状态机、清掉亚像素累积与半边按钮态。
+        // 落盘和下面的指针通知路径照常执行，一个字段都不能少存。
+        let scrollSig = s.scrollConfigSnapshot
+        if ScrollReapplyPolicy.needsApply(previous: lastAppliedScrollConfig, next: scrollSig) {
+            lastAppliedScrollConfig = scrollSig
+            ScrollEngine.shared.apply(s)
+        }
         PointerController.shared.apply(force: false)
         // 指针配置真的变了 → 通知 PointerController 立刻重新枚举并套用，
         // 不再等它的兜底轮询（用户拖滑条时要马上看到回读值变化）。
@@ -398,7 +509,104 @@ final class Preferences: ObservableObject {
     /// 上一次落盘的指针配置签名，用于判断「这次 persist 是否真的改了指针相关字段」
     private var lastPersistedPointerSignature: String?
 
+    /// 上一次真正交给 ScrollEngine 的配置快照。与上面的指针签名互不相干：
+    /// 前者门控 HID 通知，后者门控滚动引擎 apply，两者字段集完全不同。
+    private var lastAppliedScrollConfig: ScrollConfigSnapshot?
+
     func resetGlobal() {
         global = ScrollProfile()
+    }
+}
+
+// MARK: - 易用性：系统状态与诊断
+
+/// 首屏状态条使用的只读快照。所有字段都由调用方注入，便于离线断言。
+struct HealthSnapshot: Equatable {
+    var version: String = ""
+    var trusted: Bool = false
+    var tapRunning: Bool = false
+    var masterEnabled: Bool = true
+    var activeAppName: String?
+    var activeAppBundle: String?
+    var activeAppHasRule: Bool = false
+    var pointerDeviceCount: Int = 0
+    var lastSource: String?
+    var echoGuardCount: Int64 = 0
+}
+
+enum HealthLevel: String, Equatable {
+    case ok
+    case warn
+    case fail
+}
+
+struct HealthItem: Identifiable, Equatable {
+    var title: String
+    var value: String
+    var level: HealthLevel
+    var id: String { title }
+}
+
+enum HealthStatus {
+    /// 四项状态严格按「权限 → 接管 → 设备 → 当前 App」排列。
+    /// 状态条点击哪一项，就跳到对应的修复页面。
+    static func items(_ s: HealthSnapshot) -> [HealthItem] {
+        let permission = HealthItem(
+            title: "辅助功能",
+            value: s.trusted ? "已授权" : "未授权",
+            level: s.trusted ? .ok : .fail)
+
+        let takeoverValue: String
+        let takeoverLevel: HealthLevel
+        if !s.masterEnabled {
+            takeoverValue = "已暂停"
+            takeoverLevel = .warn
+        } else if !s.trusted {
+            takeoverValue = "等待授权"
+            takeoverLevel = .fail
+        } else if !s.tapRunning {
+            takeoverValue = "等待事件 tap"
+            takeoverLevel = .warn
+        } else {
+            takeoverValue = "已接管"
+            takeoverLevel = .ok
+        }
+        let takeover = HealthItem(title: "滚动接管", value: takeoverValue, level: takeoverLevel)
+
+        let device = HealthItem(
+            title: "设备",
+            value: s.pointerDeviceCount > 0 ? "\(s.pointerDeviceCount) 台指针设备" : "暂未发现",
+            level: s.pointerDeviceCount > 0 ? .ok : .warn)
+
+        let appValue: String
+        let appLevel: HealthLevel
+        if let name = s.activeAppName, !name.isEmpty {
+            appValue = s.activeAppHasRule ? "\(name) 已单独配置" : "\(name) 沿用全局"
+            appLevel = s.activeAppHasRule ? .ok : .warn
+        } else {
+            appValue = "前台应用未知"
+            appLevel = .warn
+        }
+        let app = HealthItem(title: "当前 App", value: appValue, level: appLevel)
+        return [permission, takeover, device, app]
+    }
+
+    static func report(_ s: HealthSnapshot) -> String {
+        let app = s.activeAppName ?? "未知"
+        let bundle = s.activeAppBundle ?? "未知"
+        let source = s.lastSource ?? "尚未观测到滚动"
+        let tap = s.tapRunning ? "running" : "stopped"
+        return """
+        Smoose 诊断报告
+        版本: \(s.version)
+        辅助功能: \(s.trusted ? "已授权" : "未授权")
+        滚动接管: \(s.masterEnabled ? "开启" : "暂停")
+        事件 tap: \(tap)
+        当前 App: \(app) (\(bundle))
+        当前 App 专属规则: \(s.activeAppHasRule ? "有" : "无")
+        指针设备: \(s.pointerDeviceCount) 台
+        最近滚动来源: \(source)
+        回环拦截计数: \(s.echoGuardCount)
+        """
     }
 }
