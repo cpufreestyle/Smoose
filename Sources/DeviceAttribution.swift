@@ -233,11 +233,16 @@ final class DeviceAttribution: ObservableObject {
         runLoop = nil
         manager = nil
         isRunning = false
+        lastSeenByKey.removeAll()
+        capabilityByKey.removeAll()
+        nameByKey.removeAll()
+        keyByDevice.removeAll()
         lock.unlock()
         guard let mgr else { return }
         if let rl { CFRunLoopStop(rl) }
         IOHIDManagerUnscheduleFromRunLoop(mgr, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        DispatchQueue.main.async { [weak self] in self?.devices = [] }
     }
 
     private static var inputMonitoringDenied: Bool {

@@ -4307,6 +4307,45 @@ vw_guard() {  # $1 = ScrollEngine.swift；stdout = 失败项
 VWFAILS="$(vw_guard "$ROOT/Sources/ScrollEngine.swift")"
 if [ -z "$VWFAILS" ]; then ok "V_W 接线守卫（三层判定已接进 handleWheel）"; else bad "V_W$VWFAILS"; fi
 
+# V_LC 生命周期守卫：后台监听必须随 App 退出收掉，stop() 必须清空归属状态。
+v_lc_guard() {  # $1=App.swift  $2=DeviceAttribution.swift; stdout = 失败项
+  local app da F=""
+  app="$(/usr/bin/sed -E 's://.*$::' "$1")"
+  da="$(/usr/bin/sed -E 's://.*$::' "$2")"
+  /bin/echo "$app" | /usr/bin/grep -qF 'DeviceAttribution.shared.stop()' || F="$F VLC1"
+  /bin/echo "$app" | /usr/bin/grep -qF 'GamePerfProbe.shared.stop()' || F="$F VLC2"
+  /bin/echo "$da" | /usr/bin/grep -qF 'lastSeenByKey.removeAll()' || F="$F VLC3"
+  /bin/echo "$da" | /usr/bin/grep -qF 'keyByDevice.removeAll()' || F="$F VLC4"
+  /bin/echo "$da" | /usr/bin/grep -qF 'self?.devices = []' || F="$F VLC5"
+  /bin/echo "$F"
+}
+VLCFAILS="$(v_lc_guard "$ROOT/Sources/App.swift" "$ROOT/Sources/DeviceAttribution.swift")"
+if [ -z "$VLCFAILS" ]; then ok "V_LC 后台监听生命周期守卫（退出收尾 + 状态清空）"; else bad "V_LC$VLCFAILS"; fi
+
+V_LC_MUT_RUN() {  # $1=名称 $2=文件 $3=sed 表达式 $4=期望变红的守卫编号
+  local name="$1" file="$2" expr="$3" expected="$4"
+  local dir="$WORK/vlmut_$name" out
+  /bin/mkdir -p "$dir"
+  /usr/bin/sed -e "$expr" "$ROOT/Sources/$file" > "$dir/$file"
+  if /usr/bin/cmp -s "$dir/$file" "$ROOT/Sources/$file" \
+     || ! /usr/bin/grep -q 'MUTANT' "$dir/$file"; then
+    bad "V_LC_MUT_$name 变异注入失败"
+    return
+  fi
+  if [ "$file" = "App.swift" ]; then
+    out="$(v_lc_guard "$dir/App.swift" "$ROOT/Sources/DeviceAttribution.swift")"
+  else
+    out="$(v_lc_guard "$ROOT/Sources/App.swift" "$dir/DeviceAttribution.swift")"
+  fi
+  /bin/echo "$out" | /usr/bin/grep -qF "$expected" \
+    && ok "V_LC_MUT_$name 接线变异验证（$expected 变红）" \
+    || bad "V_LC_MUT_$name 摘掉接线没被抓红（$expected）"
+}
+V_LC_MUT_RUN appstop App.swift \
+  's#DeviceAttribution.shared.stop()#// MUTANT#' 'VLC1'
+V_LC_MUT_RUN clearkeys DeviceAttribution.swift \
+  's#lastSeenByKey.removeAll()#// MUTANT#' 'VLC3'
+
 VMUT_RUN() {  # $1=名称 $2=sed 表达式 $3=必须变红的断言前缀
   local name="$1" expr="$2" expected="$3"
   local dir="$WORK/vmut_$name" rc=0 out misses="" c

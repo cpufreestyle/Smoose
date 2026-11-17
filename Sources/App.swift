@@ -247,6 +247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
         ScrollEngine.shared.stop()
+        GamePerfProbe.shared.stop()
+        DeviceAttribution.shared.stop()
     }
 
     /// 兜底入口：多屏下 status item 被系统挂到副屏/幽灵屏时，用户仍可用

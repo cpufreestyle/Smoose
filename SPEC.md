@@ -1635,3 +1635,7 @@ Firefox / Arc / Brave）→「浏览器」；终端与编辑器（Terminal / iTe
 **设备归属围栏**：`DeviceAttributionPolicy.closestKey(connectedKeys:lastSeen:timestamp:windowNanos:)` 把在线设备集合作为显式输入；已拔掉设备不再按残留时间戳抢归属。两台设备同时间上报按设备键字典序做稳定裁决；同一物理设备的最后一个 HID 集合移除时清理能力 / 名称 / 时间戳缓存，避免重新插入时带着旧状态复活。窗口仍为 50ms，归属失败继续回落事件启发式。
 
 **断言**：S18 段编译真 `Model.swift`，覆盖自动聊天 / 手动浏览器 / 未知 App 的透传与输出保留；V 段编译真 `Model.swift` + `DeviceAttribution.swift`，新增 V16–V20 覆盖在线 / 离线 / 最近 / 同时间 / 超窗，并用 `V_MUT_disconnected`、`V_MUT_tiebreak` 确认断言会报红。
+
+## 49. 后台监听生命周期（2026-11-17）
+
+`App.applicationWillTerminate` 必须同时停止 `ScrollEngine`、`GamePerfProbe` 和 `DeviceAttribution`。`DeviceAttribution.stop()` 清空在线设备、能力、名称与最后时间戳，清空后 `device(forTimestamp:)` 返回 nil，滚动判定回落事件启发式。harness `V_LC` 用真源码文本守卫覆盖接线，并用 `V_LC_MUT_appstop` / `V_LC_MUT_clearkeys` 验证守卫会报红。
