@@ -11,6 +11,7 @@
 //   /tmp/axhelp --all        连没有 tooltip 的控件也列出来（排查漏挂载）
 //   /tmp/axhelp --panel      顺带打开菜单栏面板一起读
 //   /tmp/axhelp --expand     先点开每应用的折叠行，再读「细节参数」里的轴向开关
+//   /tmp/axhelp --confirm-interact  确认允许合成点击后再跑 --expand（默认 --expand 只读）
 //
 // 判定标准：PROBE-OK 只说明「读到了至少一个 tooltip」。要判断某个具体控件有没有
 // 挂上，看输出里有没有它的标题 —— 没有就是没挂，别用总数糊过去。
@@ -22,6 +23,7 @@ let args = Set(CommandLine.arguments)
 let verbose = args.contains("--all")
 let wantPanel = args.contains("--panel")
 let wantExpand = args.contains("--expand")
+let allowInteraction = args.contains("--confirm-interact")
 
 guard let app = NSWorkspace.shared.runningApplications
     .first(where: { $0.bundleIdentifier == bundleID }) else {
@@ -60,6 +62,10 @@ func switchTab(_ n: Int) {
 
 /// 点开标题含「细节参数」的折叠组（每应用的轴向开关默认折叠着，不点开读不到）。
 func expandDetails() {
+    guard allowInteraction else {
+        print("PROBE-INFO --expand 需要同时传 --confirm-interact 才会合成点击；本次只读")
+        return
+    }
     func rec(_ e: AXUIElement, depth: Int) {
         if depth > 12 { return }
         for k in kids(e) {
@@ -80,6 +86,10 @@ func expandDetails() {
 /// 点开每应用列表里的行：SwiftUI List 的 DisclosureGroup 不单独暴露 AX 元素，
 /// 折叠内容连 AX 树里都没有，只能整行 AXPress 让它展开。
 func pressRows() {
+    guard allowInteraction else {
+        print("PROBE-INFO --expand 需要同时传 --confirm-interact 才会合成点击；本次只读")
+        return
+    }
     func rec(_ e: AXUIElement, depth: Int) {
         if depth > 12 { return }
         for k in kids(e) {

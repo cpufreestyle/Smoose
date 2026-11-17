@@ -331,7 +331,7 @@
 >    这 6 处的证据只有三条：文案在二进制里逐条命中 + T_W 3 要求每个键都有调用点 +
 >    同一个 `List` 容器里的「接管」复选框和两个滑条已实测带 tooltip。
 >    菜单栏面板是 `NSPopover`，不出现在 `kAXWindowsAttribute`，探针同样读不到。
->    要补真机读数，需要手工点开折叠组后重跑 `/tmp/axhelp --expand`。
+>    要补真机读数，需要手工点开折叠组后重跑 `/tmp/axhelp --expand --confirm-interact`。
 > ⑧ **未发版**：`Info.plist` 仍是 1.4.6 / 13，本机 = 线上 1.4.6 + 本轮悬停解释。
 >    等用户明确说「推送」再抬版本发 Release。
 > ⑨ **顺带修正的文档错误**：`smoose://settings?tab=N` 的真实 tab 顺序是
@@ -805,12 +805,22 @@
 
 ## 1. 项目状态
 
+> **2026-11-17 第四十一轮（用户「优化项目 / 继续」→ 每应用模板保住全局策略、设备拔插归属围栏；PASS=106 FAIL=0，未发版）**：
+> ① `ScrollProfile.templateForNewApp(bundleID:presetName:global:)` 成为新增规则的唯一模板入口：
+> 自动识别 / 手动预设只改曲线，透传键、加速键、加速倍率、输出方式、斜向锁定都沿用全局；
+> `preset(named:preservingBoostFrom:)` 同时补上 `bypassModifiers`，「套用预设模板」不再偷偷清掉透传键。
+> ② 设备归属新增 `DeviceAttributionPolicy.closestKey`：查询只看当前在线设备，拔掉的接收器
+> 不再用旧时间戳抢走滚动；多台设备同时间按设备键稳定裁决，最后一个 HID 集合移除时清理缓存。
+> ③ harness S18 段补模板保留策略断言；V 段补 V16–V20 与两条变异（disconnected / tiebreak），
+> 全量 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **PASS=106 FAIL=0**。
+> 构建 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh` RC=0，Mach-O sha256 `5df0421418606e865137584dfeb6f009951ea3baed83a62cc8fc2a336dd6cd46`，`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`。已 ditto 到 `/Applications/Smoose.app` 并重启（pid 68648，1.5.0 / build 14，辅助功能 `auth_value=2`）；旧包备份在 `docs/backups/Smoose.app.prev-1.5.0-20261117_224116.app`。**未发版**；线上仍按 `/releases/latest` 为准。
+>
 > 下表前半段保留了历史快照；**当前实测以 `/Applications` 的 1.5.0 / build 14 和
-> 2026-11-15 反编译审计轮记录为准**。旧行里的 1.4.2、`PASS=27` 等数字是当时版本，不再是现值。
+> 2026-11-17 第四十一轮记录为准**。旧行里的 1.4.2、`PASS=27` 等数字是当时版本，不再是现值。
 
 | 项 | 状态 |
 | --- | --- |
-| 当前实测（2026-11-15） | `/Applications/Smoose.app` = **1.5.0 / build 14**，Mach-O sha256 `7e5ecc32bc6b0bc119da79af0d614303fed7fef8177e7531d6a32ce1617f1e39`，进程 pid 70747；源码 18 个 Swift 编译单元，全量 harness **PASS=104 FAIL=0**；本轮修距离守恒、加斜向锁定，并落地首屏状态条 / 一键诊断 / 简易高级模式 / 新增应用模板，未改版本号、未发版。 |
+| 当前实测（2026-11-17） | `/Applications/Smoose.app` = **1.5.0 / build 14**，Mach-O sha256 `5df0421418606e865137584dfeb6f009951ea3baed83a62cc8fc2a336dd6cd46`，进程 pid 68648；源码 18 个 Swift 编译单元，全量 harness **PASS=106 FAIL=0**；本轮补每应用模板保留全局策略与设备拔插归属围栏，未改版本号、未发版。 |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 / 游戏性能检测 / 合成事件触控板相位 / 点击刹车 全部已实现 |
 | 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**：2026-11-02 含游戏性能检测（Mach-O sha256 `cb00dbd3105ec7da…`）；**2026-11-03 第十五轮后含合成事件相位 + 点击刹车 + Dock 透传，Mach-O sha256 `f10ff7a677dbab1686639b90af85489e3227bfb3dff351f744c5e1f825d4358e`**（`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、`open -a` 启动无崩溃、`smoose://settings?tab=scroll` 弹出 560×548 设置窗），`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链（2026-11-03 清理轮已整体移至点号目录 `~/.smoose-rollbacks/`，不进 Spotlight，保留回滚能力；目录内 `MANIFEST.txt` 逐条记录版本 / build / sha256 / 体积 / 理由）：`Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / `Smoose-1.4.2-pre-gameperf.app`（含游戏功能前的最后一个可用版，可回滚）/ `Smoose-1.4.2-pre-phase.app`（含本轮相位功能前的最后一个可用版，Mach-O `cb00dbd3…`，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a。**2026-11-06 第十六轮重新部署**（含加速度漂移修复，未发版），Mach-O sha256 `7346f355db861bd135e9133a0b18ca849f5b37f04d85803ee7e51cfe51e173ff`，`PASS=27 FAIL=0`，真机端到端 6s 自愈已验证 |
@@ -1705,6 +1715,8 @@ CONNECT 直接回 503 / TLS 握手 EOF。实测：`git clone` 第 7 次成功、
   三条拒因分支（ad-hoc → `notSigned`、篡改 → `signatureInvalid`、他人 Team → `teamMismatch`）现在都有断言。
 
 ---
+
+- [x] **2026-11-17 优化轮**：每应用模板保留全局透传 / 加速 / 输出策略；设备归属只看在线设备并稳定裁决；`AXHelpProbe --expand` 默认只读，需显式 `--confirm-interact` 才合成点击。harness **PASS=106 FAIL=0**，已部署 `/Applications/Smoose.app`（sha256 `5df04214…`）。
 
 ## 8. 接手 Checklist
 

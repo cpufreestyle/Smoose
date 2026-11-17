@@ -725,6 +725,8 @@ var tuned = ScrollProfile()
 tuned.boostModifiers = UInt64(cmd)
 tuned.boostFactor = 4.0
 tuned.axisLockThreshold = 0.35
+tuned.bypassModifiers = UInt64(1 << 21)
+tuned.simulateTrackpad = false
 if let p = ScrollProfile.preset(named: "浏览器", preservingBoostFrom: tuned) {
     require(p.boostModifiers == UInt64(cmd), "S18a 套预设后加速键还在")
     require(p.boostFactor == 4.0, "S18b 套预设后加速倍率还在")
@@ -732,9 +734,30 @@ if let p = ScrollProfile.preset(named: "浏览器", preservingBoostFrom: tuned) 
     require(p.enabled == true, "S18d 普通预设不得顺手关掉开关")
     require(p.axisLockThreshold == 0.35, "S18e 套预设后斜向锁定阈值还在")
     require(ScrollProfile().axisLockThreshold == 0, "S18f 斜向锁定默认必须关闭")
+    require(p.bypassModifiers == tuned.bypassModifiers, "S18g 套预设后透传键还在")
+    require(p.simulateTrackpad == false, "S18h 套预设后输出方式不被悄悄打开")
 } else {
     require(false, "S18 预设名『浏览器』不存在")
 }
+
+// S18i-m 新增每应用规则的统一模板：自动识别只取曲线建议，
+// 透传键 / 加速键 / 输出方式 / 斜向锁定必须沿用全局，未知 App 也不能清掉。
+let autoChat = ScrollProfile.templateForNewApp(bundleID: "com.tencent.xinWeChat",
+                                               presetName: "自动识别", global: tuned)
+require(autoChat.speed == 0.8, "S18i 自动识别采用聊天档曲线")
+require(autoChat.bypassModifiers == tuned.bypassModifiers
+        && autoChat.boostModifiers == tuned.boostModifiers
+        && autoChat.boostFactor == tuned.boostFactor
+        && autoChat.simulateTrackpad == tuned.simulateTrackpad
+        && autoChat.axisLockThreshold == tuned.axisLockThreshold,
+        "S18j 自动识别保留全局策略")
+let manualBrowser = ScrollProfile.templateForNewApp(bundleID: "com.example.unknown",
+                                                    presetName: "浏览器", global: tuned)
+require(manualBrowser.speed == 4.0, "S18k 手动预设生效")
+require(manualBrowser.bypassModifiers == tuned.bypassModifiers, "S18l 手动预设保留透传键")
+let unknownAuto = ScrollProfile.templateForNewApp(bundleID: "com.example.unknown",
+                                                  presetName: "自动识别", global: tuned)
+require(unknownAuto == tuned, "S18m 未知 App 自动识别逐字沿用全局")
 
 // S19 「跳过此 App」这类特殊预设必须保留自己的 enabled=false，
 // 不能被「保留加速键」的逻辑顺手打开（否则用户以为配了跳过其实没跳过）
@@ -4224,6 +4247,33 @@ require(DeviceVerdict.allCases.count == 3
         && Set(DeviceVerdict.allCases.map(\.label)).count == 3,
         "V15 判定档位齐备（自动 / 触控板 / 滚轮鼠标）")
 
+// V16-V20 拔插后的归属围栏：已拔掉的设备不得按旧时间戳抢走事件，
+// 多集合共用同一设备键时按字典序做确定性裁决。
+let now: UInt64 = 1_000_000_000
+let window = DeviceAttributionWindowNanos
+require(DeviceAttributionPolicy.closestKey(connectedKeys: ["mouse"],
+                                           lastSeen: ["mouse": now - 1_000_000],
+                                           timestamp: now) == "mouse",
+        "V16 在线设备保持最近归属")
+require(DeviceAttributionPolicy.closestKey(connectedKeys: [],
+                                           lastSeen: ["mouse": now - 1_000_000],
+                                           timestamp: now) == nil,
+        "V17 已拔掉设备不得抢归属")
+require(DeviceAttributionPolicy.closestKey(connectedKeys: ["builtin", "mouse"],
+                                           lastSeen: ["builtin": now - 1_000_000,
+                                                      "mouse": now - 2_000_000],
+                                           timestamp: now) == "builtin",
+        "V18 两台设备按最近时间取")
+require(DeviceAttributionPolicy.closestKey(connectedKeys: ["mouse", "builtin"],
+                                           lastSeen: ["builtin": now - 1_000_000,
+                                                      "mouse": now - 1_000_000],
+                                           timestamp: now) == "builtin",
+        "V19 同时间按设备键稳定裁决")
+require(DeviceAttributionPolicy.closestKey(connectedKeys: ["mouse"],
+                                           lastSeen: ["mouse": now - (window + 1)],
+                                           timestamp: now) == nil,
+        "V20 超出关联窗口回落启发式")
+
 if failures == 0 { print("V-OK") } else { exit(1) }
 VSWIFT
 
@@ -4235,7 +4285,7 @@ VRC=0
 if VCOMPILE "$ROOT/Sources" "$WORK/v"; then
   VOUT="$("$WORK/v" 2>&1)" || VRC=$?
   if [ "$VRC" = "0" ]; then
-    ok "V 设备键/能力/三层判定（V1–V15）"
+    ok "V 设备键/能力/三层判定/拔插归属（V1–V20）"
   else
     bad "V $(/bin/echo "$VOUT" | /usr/bin/grep '^FAIL' | /usr/bin/tr '\n' ' ')"
   fi
@@ -4291,6 +4341,12 @@ VMUT_RUN fallback \
 # 设备键丢掉 builtin 分支 → V1 必须亮
 VMUT_RUN builtinkey \
   's#if builtIn { return "builtin" }#if false { return "builtin" } // MUTANT#' 'V1'
+# 归属重新放回所有历史设备（旧行为）→ V17 必须亮
+VMUT_RUN disconnected \
+  's#for key in connectedKeys {#for key in lastSeen.keys { // MUTANT#' 'V17'
+# 同时间裁决改成反向排序 → V19 必须亮（反向结果与 Set 迭代顺序无关，必红）
+VMUT_RUN tiebreak \
+  's#let tieBreak = bestKey.map { key < \$0 } ?? true#let tieBreak = bestKey.map { key > $0 } ?? true // MUTANT#' 'V19'
 
 echo
 echo "== 结果: PASS=$PASS FAIL=$FAIL =="

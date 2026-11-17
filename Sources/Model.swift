@@ -114,6 +114,9 @@ struct ScrollProfile: Codable, Equatable {
         // 「模拟触控板相位」是输出方式开关、不是曲线参数：和 boost 同一个理由，
         // 套预设时必须保留，否则特意关掉它的用户点一下预设就被悄悄打开。
         p.simulateTrackpad = current.simulateTrackpad
+        // 透传修饰键同样是用户配好的全局策略：预设只负责曲线参数。
+        // 漏掉这一句时，用户设了 ⌃ 透传再套「浏览器」，⌃ 会在浏览器里重新触发接管。
+        p.bypassModifiers = current.bypassModifiers
         return p
     }
 
@@ -152,6 +155,26 @@ struct ScrollProfile: Codable, Equatable {
         if browserBundleIDs.contains(id) { return presets["浏览器"] }
         if nativeBundleIDs.contains(id) { return presets["原生 App"] }
         return nil
+    }
+
+    /// 新增每应用规则时套用的模板：自动识别只提供曲线建议，
+    /// 输出方式 / 透传键 / 加速键 / 斜向锁定都沿用用户当前全局配置。
+    static func templateForNewApp(bundleID id: String,
+                                  presetName: String,
+                                  global: ScrollProfile) -> ScrollProfile {
+        let base: ScrollProfile
+        if presetName == "自动识别" {
+            base = suggested(forBundleID: id) ?? global
+        } else {
+            base = presets[presetName] ?? global
+        }
+        var result = base
+        result.boostModifiers = global.boostModifiers
+        result.boostFactor = global.boostFactor
+        result.bypassModifiers = global.bypassModifiers
+        result.simulateTrackpad = global.simulateTrackpad
+        result.axisLockThreshold = global.axisLockThreshold
+        return result
     }
 }
 

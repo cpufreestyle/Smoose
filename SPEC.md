@@ -1264,12 +1264,12 @@ S28/S29 红）与 MUT10（按压次数写死 → S36/S38 红）。注意变异�
 用 `AXUIElementCopyAttributeValue(k, "AXHelp")` 从 WindowServer 读回每个控件真实挂上的
 toolTip。`.help()` 在某些容器里会被吞掉，源码全绿而真机悬停毫无反应 —— 只有这条路能抓到。
 
-    swiftc -O Probe/AXHelpProbe.swift -o /tmp/axhelp && /tmp/axhelp --expand
+    swiftc -O Probe/AXHelpProbe.swift -o /tmp/axhelp && /tmp/axhelp --expand --confirm-interact
     # 2026-11-09 实测：6 个 tab + 设置窗口共 99 个控件带 tooltip
     # tab0 常规 43 / tab1 指针 30 / tab2 每应用 11 / tab3 按键 6 / tab4 游戏 1 / tab5 关于 4
 
 `--all` 把没有 tooltip 的控件也列出来（排查「该挂没挂」只能靠这个）；`--expand`
-点开每应用的折叠行。菜单栏面板是 `NSPopover`，不出现在 `kAXWindowsAttribute` 里，
+会请求点开每应用的折叠行，但必须再加 `--confirm-interact` 才会真的合成点击。菜单栏面板是 `NSPopover`，不出现在 `kAXWindowsAttribute` 里，
 探针读不到，那一处的悬停只由 T_W 的源码级守卫覆盖。
 
 **本轮未覆盖的边界**：每应用「细节参数」折叠组里的轴向开关（6 个新键）在真机 AX 树上
@@ -1627,3 +1627,11 @@ Firefox / Arc / Brave）→「浏览器」；终端与编辑器（Terminal / iTe
 
 **断言**：S18-S28 编译真 `Model.swift` 断言聊天 / 浏览器 / 编辑器 / 未知 App 的自动分组；
 模板存在性另由 S23d/S23e 守住。UI 使用 `profileForNewApp` 与 `preservingGlobalOutput` 接线。
+
+## 48. 模板策略保留与设备拔插归属（2026-11-17）
+
+**模板策略保留**：`ScrollProfile.templateForNewApp(bundleID:presetName:global:)` 统一新增每应用规则的模板选择：自动识别只提供曲线建议，手动预设覆盖曲线；透传键、加速键、倍率、输出方式、斜向锁定全部沿用全局。`preset(named:preservingBoostFrom:)` 同时保留 `bypassModifiers`，因此每行「套用预设模板」不会重置用户配好的透传策略。
+
+**设备归属围栏**：`DeviceAttributionPolicy.closestKey(connectedKeys:lastSeen:timestamp:windowNanos:)` 把在线设备集合作为显式输入；已拔掉设备不再按残留时间戳抢归属。两台设备同时间上报按设备键字典序做稳定裁决；同一物理设备的最后一个 HID 集合移除时清理能力 / 名称 / 时间戳缓存，避免重新插入时带着旧状态复活。窗口仍为 50ms，归属失败继续回落事件启发式。
+
+**断言**：S18 段编译真 `Model.swift`，覆盖自动聊天 / 手动浏览器 / 未知 App 的透传与输出保留；V 段编译真 `Model.swift` + `DeviceAttribution.swift`，新增 V16–V20 覆盖在线 / 离线 / 最近 / 同时间 / 超窗，并用 `V_MUT_disconnected`、`V_MUT_tiebreak` 确认断言会报红。

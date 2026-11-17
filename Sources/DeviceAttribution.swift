@@ -3,6 +3,9 @@ import Combine
 import IOKit.hid
 import CoreGraphics
 
+/// 事件时间戳与设备最后一次上报的匹配窗口。
+let DeviceAttributionWindowNanos: UInt64 = 50_000_000
+
 // MARK: - 纯逻辑（harness 可直接编译断言）
 
 /// 设备能力分类：按 HID 集合静态判定，不依赖事件表现。
@@ -74,6 +77,33 @@ enum DeviceScrollPolicy {
     }
 }
 
+/// 只把「当前还插着的设备」当作候选。
+///
+/// 旧实现直接遍历 `lastSeenByKey`：拔掉接收器后那 50ms 内如果再来一个滚轮事件，
+/// 已拔掉的设备仍会按旧时间戳抢走归属。这里把在线设备集合显式当成输入，
+/// 纯函数形态便于 harness 用真源码钉死这个边界；同时间戳按设备键排序，避免字典遍历顺序
+/// 让归属在两台设备间随机摇摆。
+enum DeviceAttributionPolicy {
+    static func closestKey(connectedKeys: Set<String>,
+                           lastSeen: [String: UInt64],
+                           timestamp: UInt64,
+                           windowNanos: UInt64 = DeviceAttributionWindowNanos) -> String? {
+        var bestKey: String?
+        var bestDelta = UInt64.max
+        for key in connectedKeys {
+            guard let seen = lastSeen[key] else { continue }
+            let delta = timestamp >= seen ? timestamp - seen : seen - timestamp
+            guard delta <= windowNanos else { continue }
+            let tieBreak = bestKey.map { key < $0 } ?? true
+            if delta < bestDelta || (delta == bestDelta && tieBreak) {
+                bestDelta = delta
+                bestKey = key
+            }
+        }
+        return bestKey
+    }
+}
+
 /// 归属结果（供设置页展示与判定使用）。
 struct AttributedDevice: Identifiable, Equatable {
     var key: String
@@ -101,7 +131,7 @@ final class DeviceAttribution: ObservableObject {
 
     /// 关联窗口：人手不可能在 50ms 内交替驱动两台设备产生连续滚动，
     /// 而单设备连发间隔通常 8–16ms，窗口足够覆盖。
-    static let windowNanos: UInt64 = 50_000_000
+    static let windowNanos: UInt64 = DeviceAttributionWindowNanos
 
     private let lock = NSLock()
     private var capabilityByKey: [String: DeviceCapability] = [:]
@@ -242,7 +272,14 @@ final class DeviceAttribution: ObservableObject {
 
     private func unregister(device: IOHIDDevice) {
         lock.lock()
-        keyByDevice.removeValue(forKey: Unmanaged.passUnretained(device).toOpaque())
+        if let key = keyByDevice.removeValue(forKey: Unmanaged.passUnretained(device).toOpaque()),
+           !keyByDevice.values.contains(key) {
+            // 同一物理设备可能有多个 HID 集合（接收器尤其常见）：最后一个集合移除时
+            // 才清掉缓存，否则按同一设备键重新登记时会带着旧能力和旧时间戳复活。
+            lastSeenByKey.removeValue(forKey: key)
+            capabilityByKey.removeValue(forKey: key)
+            nameByKey.removeValue(forKey: key)
+        }
         lock.unlock()
         publishDevices()
     }
@@ -260,16 +297,12 @@ final class DeviceAttribution: ObservableObject {
     /// 按事件时间戳找最近活跃的设备；窗口外或表为空返回 nil。
     func device(forTimestamp timestamp: UInt64) -> AttributedDevice? {
         lock.lock(); defer { lock.unlock() }
-        var bestKey: String?
-        var bestDelta = UInt64.max
-        for (key, seen) in lastSeenByKey {
-            let delta = timestamp >= seen ? timestamp - seen : seen - timestamp
-            if delta <= Self.windowNanos, delta < bestDelta {
-                bestDelta = delta
-                bestKey = key
-            }
-        }
-        guard let key = bestKey else { return nil }
+        let connectedKeys = Set(keyByDevice.values)
+        guard let key = DeviceAttributionPolicy.closestKey(
+            connectedKeys: connectedKeys,
+            lastSeen: lastSeenByKey,
+            timestamp: timestamp,
+            windowNanos: Self.windowNanos) else { return nil }
         return AttributedDevice(key: key,
                                 name: nameByKey[key] ?? key,
                                 capability: capabilityByKey[key] ?? .unknown,

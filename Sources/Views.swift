@@ -740,24 +740,9 @@ struct AppRulesTab: View {
 
     /// 新增规则的唯一入口：自动识别只对保守白名单生效；手动预设覆盖自动结果。
     private func profileForNewApp(id: String) -> ScrollProfile {
-        if newAppPreset == "自动识别" {
-            guard let suggested = ScrollProfile.suggested(forBundleID: id) else {
-                return prefs.global
-            }
-            return preservingGlobalOutput(suggested)
-        }
-        return ScrollProfile.preset(named: newAppPreset, preservingBoostFrom: prefs.global)
-            ?? prefs.global
-    }
-
-    /// 自动模板只改曲线参数；输出方式、斜向锁定和加速键属于用户的全局策略，新增 App 时不能被模板重置。
-    private func preservingGlobalOutput(_ profile: ScrollProfile) -> ScrollProfile {
-        var p = profile
-        p.boostModifiers = prefs.global.boostModifiers
-        p.boostFactor = prefs.global.boostFactor
-        p.simulateTrackpad = prefs.global.simulateTrackpad
-        p.axisLockThreshold = prefs.global.axisLockThreshold
-        return p
+        ScrollProfile.templateForNewApp(bundleID: id,
+                                        presetName: newAppPreset,
+                                        global: prefs.global)
     }
 }
 
