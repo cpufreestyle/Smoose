@@ -813,7 +813,8 @@
 > 不再用旧时间戳抢走滚动；多台设备同时间按设备键稳定裁决，最后一个 HID 集合移除时清理缓存。
 > ③ harness S18 段补模板保留策略断言；V 段补 V16–V20 与两条变异（disconnected / tiebreak），
 > 全量 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **PASS=106 FAIL=0**。
-> 构建 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh` RC=0，Mach-O sha256 `5df0421418606e865137584dfeb6f009951ea3baed83a62cc8fc2a336dd6cd46`，`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`。已 ditto 到 `/Applications/Smoose.app` 并重启（pid 68648，1.5.0 / build 14，辅助功能 `auth_value=2`）；旧包备份在 `docs/backups/Smoose.app.prev-1.5.0-20261117_224116.app`。**未发版**；线上仍按 `/releases/latest` 为准。
+> 构建 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./build.sh` RC=0，Mach-O sha256 `5df0421418606e865137584dfeb6f009951ea3baed83a62cc8fc2a336dd6cd46`，`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`。已 ditto 到 `/Applications/Smoose.app` 并重启（pid 68648，1.5.0 / build 14，辅助功能 `auth_value=2`）；旧包备份在 `docs/backups/Smoose.app.prev-1.5.0-20261117_224116.app`。**未发版；代码与文档提交 `fea54fc` 已推送到 GitHub `main`。**
+> 线上仍按 `/releases/latest` 为准。
 >
 > 下表前半段保留了历史快照；**当前实测以 `/Applications` 的 1.5.0 / build 14 和
 > 2026-11-17 第四十一轮记录为准**。旧行里的 1.4.2、`PASS=27` 等数字是当时版本，不再是现值。
