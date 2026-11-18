@@ -116,10 +116,10 @@ Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
 只上传 `dist/` 里现成的 zip、校验线上 digest 与本地 sha 一致、再回填版本源 JSON。
 ⚠️ 发布后不要再跑不带 `--github` 的 `release.sh`：它会重写已发布的 zip 并清空 manifest 的 url。
 
-源码 19 个编译单元（18 个 Swift + 1 个 C）：`main.swift`（纯 AppKit 入口）、
+源码 19 个 Swift 编译单元 + 1 个 C（`TouchEvents.c`）+ 3 个 IOHID 头文件：`main.swift`（纯 AppKit 入口）、
 `App.swift`（AppDelegate / 状态栏 / 窗口自愈）、`Views.swift`（界面）、`Model.swift`（配置模型）、
 `ScrollAxis.swift` / `ScrollPhases.swift`（插值与相位，纯逻辑）、
-`ScrollEngine.swift`（事件拦截 + 帧驱动 + 指针速度）、`PointerController.swift`（HID 指针加速度）、
+`ScrollEngine.swift`（事件拦截 + 帧驱动 + 指针速度）、`DeviceAttribution.swift`（设备归属：IOHID 影子监听 + 能力分类 + 三层判定）、`PointerController.swift`（HID 指针加速度）、
 `Actions.swift`（按键动作）、`CursorZoom.swift`（光标放大）、`SettingsLauncher.swift`（系统设置跳转）、
 `Updater.swift` + `UpdateModel.swift`（自动更新）、`HelpText.swift`（悬停解释）、
 `GamePerf.swift`（刷新率 / 设备列表）、`HIDPPProtocol.swift`（HID++ 0x2201 协议纯函数，平台无关）、
@@ -129,7 +129,7 @@ Apple Development 证书（默认路径）→ ③ ad-hoc 并打印警告。
 ### 一键验证（harness）
 
 ```bash
-./run_tests.sh                                        # 离线，PASS=104 FAIL=0
+./run_tests.sh                                        # 离线，PASS=109 FAIL=0
 SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agent 沙箱）
 ```
 
@@ -153,10 +153,10 @@ SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agen
 | **N / N_W / N_MUT / N_MUT2 / N_MUT3** | **硬件 DPI 快捷键自动同步（23 项）**：非独占只读长连接、失败不吞 / 写入竞态、状态文案明确「未回写硬件」、无 App 前台门禁；三趟变异验证 |
 | **O / O_W / O_MUT / O_MUT2 / O_MUT3** | **系统设置跳转（14 项）**：新 PrivacySecurity 扩展 ID、completionHandler 接住失败、失败反馈含原因 / 重试 / 手动路径；三趟变异验证 |
 | **P / P_W / P_MUT / P_MUT2 / P_MUT3 / P_MUT4** | **光标放大（31 项）**：反相映射、写后独立读回、失败回弹、「待重新登录」文案、冷启动两步直达 Display 页；四趟变异验证 |
-| **V / V_W / V_MUT / V_MUT2 / V_MUT3** | **设备级滚动类型识别（15 项）**：设备键形态 / 能力分类与合并 / 三层判定与退化不变式 / 旧配置解码 / 判定参与签名 / 接线守卫；三趟变异验证 |
+| **V / V_W / V_LC / V_MUT** | **设备级滚动类型识别与拔插归属（20 项）**：设备键形态 / 能力分类与合并 / 三层判定与退化不变式 / 旧配置解码 / 判定参与签名 / 在线设备归属与同时间裁决 / 接线守卫；`V_LC` 守退出收尾，`V_MUT_disconnected`、`V_MUT_tiebreak` 抓变异 |
 | **S40** | **设备插拔与设备表刷新**：`IOHIDManager` 必须挂到在跑的 run loop（否则插拔回调永不派发）、设备表 `@Published`、行视图订阅 |
 
-（上表是主要阶段；完整执行顺序以 `run_tests.sh` 输出的 `== X:` 为准，当前 `PASS=104 FAIL=0`。）
+（上表是主要阶段；完整执行顺序以 `run_tests.sh` 输出的 `== X:` 为准，当前 `PASS=109 FAIL=0`。）
 
 改引擎 / 持久化 / 自动更新 / **指针加速度**代码后必须跑一遍，全部 PASS 才算完成。
 契约与断言清单见 [SPEC.md](SPEC.md)；关键坑与真机验证记录见 [HANDOFF.md](HANDOFF.md)。

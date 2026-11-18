@@ -122,7 +122,7 @@ boostModifiers/boostFactor 且覆盖 speed；「跳过此 App」仍 enabled=fals
 | **T**（2026-11-09） | 编译真 `Sources/HelpText.swift` 查文案表 + `tw_guard` 查 `Views.swift` 接线（47 键 / 40 处挂载）+ 三趟变异 | 键没文案、两句重复、加了键忘了接线、摘掉挂载没人报（详见 §36） |
 
 用法：
-    ./run_tests.sh                                        # 普通终端，离线，PASS=104 FAIL=0
+    ./run_tests.sh                                        # 普通终端，离线，PASS=109 FAIL=0
     SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh    # 受限环境（CI / agent 沙箱，Swift 宏需子进程）
 
 > ⚠️ **`--device` 的真实边界（2026-10-27 实测确认，勿再重复尝试）**：`--device` 段当前
@@ -1639,3 +1639,22 @@ Firefox / Arc / Brave）→「浏览器」；终端与编辑器（Terminal / iTe
 ## 49. 后台监听生命周期（2026-11-17）
 
 `App.applicationWillTerminate` 必须同时停止 `ScrollEngine`、`GamePerfProbe` 和 `DeviceAttribution`。`DeviceAttribution.stop()` 清空在线设备、能力、名称与最后时间戳，清空后 `device(forTimestamp:)` 返回 nil，滚动判定回落事件启发式。harness `V_LC` 用真源码文本守卫覆盖接线，并用 `V_LC_MUT_appstop` / `V_LC_MUT_clearkeys` 验证守卫会报红。
+
+## 50. 交接文档与实测对齐（2026-11-18）
+
+本轮**不改源码**，只把交接文档刷新到与当前实况一致，并记录重新取证的数字：
+
+- 全量 `SMOOSE_SWIFT_EXTRA=-disable-sandbox ./run_tests.sh` → **PASS=109 FAIL=0**（30 段）。
+- `/Applications/Smoose.app` = 1.5.0 / build 14，Mach-O sha256
+  `482c8c0d5a8dc4ea70674e8e7cabea6e8261271d3bce5c65e63921bdea43248e`，
+  `codesign --verify --deep --strict` 通过，`TeamIdentifier=6U2DQJ6Z2N`，pid 57089，
+  系统级 TCC `kTCCServiceAccessibility|app.smoose.macos|2`。
+- 线上 `GET /releases/latest` = **v1.5.0**，asset `Smoose-1.5.0.zip` 1,192,543 字节 /
+  `digest=sha256:0368ccbe…`。本地 `dist/Smoose-1.5.0.zip` 已被外部进程重打为
+  `0a46833f…`，因此发版状态只认线上 digest。
+- 源码规模：`Sources/` 19 个 Swift（8272 行）+ `TouchEvents.c` + 3 个 IOHID 头（合计 9145 行）。
+- 仓库状态：GitHub `main` = `d59f926`，工作树干净；本地工作目录无 `.git`，提交走 clone 副本。
+
+**修订的过期数字**：HANDOFF §1「源码 14 个文件」与「版本源 latest = v1.4.3」；
+README / SPEC 里的 `PASS=104`；README 编译单元清单补 `DeviceAttribution.swift`。
+历史轮次段落中的旧 PASS 数属于当时快照，保留不改。
