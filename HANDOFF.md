@@ -817,7 +817,7 @@
 > `0a46833f…`，**判断发版只认线上 digest**，别拿本地 dist 比对。
 > ④ 源码：`Sources/` 19 个 Swift 编译单元 + 1 个 C（`TouchEvents.c`）+ 3 个头文件，
 > Swift 合计 8272 行、含 C/头 9145 行。
-> ⑤ GitHub `main` = `d59f926`（工作树干净）；本地工作目录**无 `.git`**，提交走 clone 副本。
+> ⑤ GitHub `main` = `a7810c9`（工作树干净）；本地工作目录**无 `.git`**，提交走 clone 副本。
 > ⑥ 已修掉的文档漂移：§1「源码 14 个文件」→ 19 Swift + 1 C；「版本源 latest = v1.4.3」→ v1.5.0；
 > README / SPEC 里的 `PASS=104` → `PASS=109`；README 补 `DeviceAttribution.swift`。
 > **本轮未发版、未改版本号、未改源码**；改动仅为文档对齐。
@@ -846,7 +846,7 @@
 
 | 项 | 状态 |
 | --- | --- |
-| 当前实测（2026-11-17 第四十二轮） | `/Applications/Smoose.app` = **1.5.0 / build 14**，Mach-O sha256 `482c8c0d5a8dc4ea70674e8e7cabea6e8261271d3bce5c65e63921bdea43248e`，进程 pid 57089；源码 18 个 Swift 编译单元，全量 harness **PASS=109 FAIL=0**；本轮补后台监听退出收尾，未改版本号、未发版。 |
+| 当前实测（2026-11-18 交接刷新轮） | `/Applications/Smoose.app` = **1.5.0 / build 14**，Mach-O sha256 `482c8c0d5a8dc4ea70674e8e7cabea6e8261271d3bce5c65e63921bdea43248e`，进程 pid 57089；源码 19 个 Swift + 1 个 C，全量 harness **PASS=109 FAIL=0**；本轮只对齐文档，未改源码、未改版本号、未发版。 |
 | 位置 | `/Users/a1-6/AI Shared/repo/Smoose/` |
 | 功能完整性 | 滚动平滑 / 倍率 / 双轴 / 每应用 / 按键绑定 / 指针加速度 / 指针速度倍率 / 侧键动作 / 指针放大 / 游戏性能检测 / 合成事件触控板相位 / 点击刹车 全部已实现 |
 | 已编译产物 | `/Applications/Smoose.app` 版本 **1.4.2**（**2026-11-01 v1.4.2 发版后部署**）。Mach-O 二进制 sha256 `d88b72054548a30bd49446447388df719bd919117fa662a31ab9e8456bc30dca`（1.4.2 发版部署后实测）。**2026-11-02 起 `/Applications/Smoose.app` 是未发版的工作副本**：2026-11-02 含游戏性能检测（Mach-O sha256 `cb00dbd3105ec7da…`）；**2026-11-03 第十五轮后含合成事件相位 + 点击刹车 + Dock 透传，Mach-O sha256 `f10ff7a677dbab1686639b90af85489e3227bfb3dff351f744c5e1f825d4358e`**（`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、`open -a` 启动无崩溃、`smoose://settings?tab=scroll` 弹出 560×548 设置窗），`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N`、辅助功能授权 `auth_value=2` 保留、启动无崩溃、真机预览四项指标均为真实数据）。含 10-26 安全加固、10-27/10-28 修复、10-29 upToDate 反馈与六项优化、10-31 罗技 HID++ 直控 + 原生轻扫手势、窗口可调整大小（1.2.3）与内容自适应（1.3.0）、滚轮加速快捷键（1.4.0）、滚动曲线实时预览（1.4.0）；`codesign --verify --deep --strict` 通过、`TeamIdentifier=6U2DQJ6Z2N` 与客户端期望一致、辅助功能授权 `auth_value=2` 保留、启动无崩溃。隔离备份链（2026-11-03 清理轮已整体移至点号目录 `~/.smoose-rollbacks/`，不进 Spotlight，保留回滚能力；目录内 `MANIFEST.txt` 逐条记录版本 / build / sha256 / 体积 / 理由）：`Smoose-1.2.1-predeploy.app` / `Smoose-1.3.0-pre-140.app` / `Smoose-1.4.0-pre-141.app` / `Smoose-1.4.1-pre-deploy.app` / `Smoose-1.4.2-pre-deploy.app` / `Smoose-1.4.2-pre-gameperf.app`（含游戏功能前的最后一个可用版，可回滚）/ `Smoose-1.4.2-pre-phase.app`（含本轮相位功能前的最后一个可用版，Mach-O `cb00dbd3…`，可回滚）。自动更新端到端安装已真机闭环实测（D20）。部署用 ditto 配方，见 §6.1a。**2026-11-06 第十六轮重新部署**（含加速度漂移修复，未发版），Mach-O sha256 `7346f355db861bd135e9133a0b18ca849f5b37f04d85803ee7e51cfe51e173ff`，`PASS=27 FAIL=0`，真机端到端 6s 自愈已验证 |
@@ -1742,7 +1742,7 @@ CONNECT 直接回 503 / TLS 握手 EOF。实测：`git clone` 第 7 次成功、
 
 ---
 
-- [x] **2026-11-18 交接刷新轮**：文档对齐实测（PASS=109、源码 19 Swift + 1 C、线上 v1.5.0、GitHub main `d59f926`）；未改源码、未发版。
+- [x] **2026-11-18 交接刷新轮**：文档对齐实测（PASS=109、源码 19 Swift + 1 C、线上 v1.5.0、GitHub main `a7810c9`）；未改源码、未发版。
 - [x] **2026-11-17 优化轮**：每应用模板保留全局透传 / 加速 / 输出策略；设备归属只看在线设备并稳定裁决；`AXHelpProbe --expand` 默认只读，需显式 `--confirm-interact` 才合成点击。harness **PASS=106 FAIL=0**，已部署 `/Applications/Smoose.app`（sha256 `5df04214…`）。
 
 ## 8. 接手 Checklist
